@@ -315,14 +315,24 @@ async fn parse_unary<T: DeserializeOwned>(
         .bytes()
         .await
         .with_context(|| format!("{method}: reading response body"))?;
-    if !ct.starts_with("application/json") {
+    // Base Streamable HTTP permits a server to answer ANY POST — including a
+    // unary request — with a `text/event-stream` body carrying the single
+    // JSON-RPC response (and possibly server-initiated messages first). We
+    // advertise `Accept: application/json, text/event-stream`, so we must
+    // accept both: parse JSON directly, or pull the matching response frame
+    // out of the SSE body.
+    let rpc: wire::JsonRpcResponse = if ct.starts_with("text/event-stream") {
+        unary_response_from_sse(&body, id)
+            .with_context(|| format!("{method}: reading JSON-RPC response from SSE body"))?
+    } else if ct.starts_with("application/json") || ct.is_empty() {
+        serde_json::from_slice(&body)
+            .with_context(|| format!("{method}: parsing JSON-RPC response"))?
+    } else {
         bail!(
             "{method}: unexpected response (HTTP {status}, content-type {ct:?}, {} body bytes)",
             body.len()
         );
-    }
-    let rpc: wire::JsonRpcResponse = serde_json::from_slice(&body)
-        .with_context(|| format!("{method}: parsing JSON-RPC response"))?;
+    };
     if let Some(err) = rpc.error {
         return Err(RpcError::from(err).into());
     }
@@ -336,6 +346,29 @@ async fn parse_unary<T: DeserializeOwned>(
         .result
         .ok_or_else(|| anyhow!("{method}: response has neither result nor error"))?;
     serde_json::from_value(result).with_context(|| format!("{method}: deserializing result"))
+}
+
+/// Extract the JSON-RPC response with the given `id` from an SSE-framed unary
+/// body. A compliant server sends exactly one response frame; any preceding
+/// frames are server-initiated requests/notifications, which a unary caller
+/// ignores. Falls back to the last parseable response if none matches `id`.
+fn unary_response_from_sse(
+    body: &[u8],
+    id: &wire::RequestId,
+) -> anyhow::Result<wire::JsonRpcResponse> {
+    let mut parser = crate::sse::SseParser::new();
+    let mut events = parser.push(body);
+    events.extend(parser.finish());
+    let mut last: Option<wire::JsonRpcResponse> = None;
+    for ev in events {
+        if let Ok(rpc) = serde_json::from_str::<wire::JsonRpcResponse>(&ev.data) {
+            if rpc.id.as_ref() == Some(id) {
+                return Ok(rpc);
+            }
+            last = Some(rpc);
+        }
+    }
+    last.ok_or_else(|| anyhow!("no JSON-RPC response frame found in SSE body"))
 }
 
 fn content_type(headers: &reqwest::header::HeaderMap) -> String {
@@ -442,6 +475,25 @@ mod tests {
             FrameOutcome::Frame(f) => Some(f),
             _ => None,
         }
+    }
+
+    #[test]
+    fn unary_response_extracted_from_sse_body() {
+        // A peer (e.g. the TS SDK / mcpkit default) answers a unary POST with
+        // a text/event-stream body instead of application/json; the single
+        // response frame must still be recovered.
+        let body = b"event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n";
+        let rpc = unary_response_from_sse(body, &expected()).unwrap();
+        assert_eq!(rpc.id, Some(wire::RequestId::Num(1)));
+        assert_eq!(rpc.result.unwrap()["ok"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn unary_response_skips_preceding_server_messages_in_sse() {
+        // Server-initiated notification first, then the actual response.
+        let body = b"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"v\":7}}\n\n";
+        let rpc = unary_response_from_sse(body, &expected()).unwrap();
+        assert_eq!(rpc.result.unwrap()["v"], serde_json::json!(7));
     }
 
     // Frames below are taken from the design sketch examples (§Push-Based Delivery).

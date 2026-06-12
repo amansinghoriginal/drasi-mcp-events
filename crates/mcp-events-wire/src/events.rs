@@ -102,11 +102,19 @@ pub struct PollEventsParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PollEventsResult {
+    // `default` on the receive side only: peers legitimately omit these
+    // (e.g. a Go server's `omitempty` drops `events`/`truncated` on the
+    // common empty poll). Our own serialization still emits every field.
+    #[serde(default)]
     pub events: Vec<EventOccurrence>,
     /// Always serialized; `null` = event type does not support replay.
+    #[serde(default)]
     pub cursor: Option<String>,
+    #[serde(default)]
     pub truncated: bool,
+    #[serde(default)]
     pub has_more: bool,
+    #[serde(default)]
     pub next_poll_ms: u64,
 }
 
@@ -128,9 +136,11 @@ pub struct StreamEventsParams {
 #[serde(rename_all = "camelCase")]
 pub struct EventsActiveParams {
     /// Always serialized; `null` = no replay support.
+    #[serde(default)]
     pub cursor: Option<String>,
+    #[serde(default)]
     pub truncated: bool,
-    #[serde(rename = "_meta")]
+    #[serde(rename = "_meta", default)]
     pub meta: Value,
 }
 
@@ -157,8 +167,9 @@ pub struct EventsTerminatedParams {
 #[serde(rename_all = "camelCase")]
 pub struct EventsHeartbeatParams {
     /// Always serialized; `null` = no replay support.
+    #[serde(default)]
     pub cursor: Option<String>,
-    #[serde(rename = "_meta")]
+    #[serde(rename = "_meta", default)]
     pub meta: Value,
 }
 
@@ -217,9 +228,12 @@ pub struct DeliveryStatus {
 pub struct SubscribeResult {
     pub id: String,
     /// Always serialized; ISO 8601 expiry, `null` = no expiry granted.
+    #[serde(default)]
     pub refresh_before: Option<String>,
     /// Always serialized; safe-to-persist watermark, `null` = no replay support.
+    #[serde(default)]
     pub cursor: Option<String>,
+    #[serde(default)]
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_status: Option<DeliveryStatus>,

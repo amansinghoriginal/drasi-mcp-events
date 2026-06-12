@@ -19,7 +19,9 @@ design sketch. Existing prototypes (TypeScript, Go) wrap simulated SaaS feeds. T
 - **Independent** — implemented from the sketch text alone; no other Events implementation
   was consulted. Every divergence from sibling implementations is therefore evidence about
   the *spec*, not shared code. The full ambiguity log is the headline deliverable:
-  **[SPEC-GAPS.md](SPEC-GAPS.md)** — 58 findings (3 rated interop-breaking).
+  **[SPEC-GAPS.md](SPEC-GAPS.md)** — 58 findings from the build plus 7 confirmed by
+  cross-implementation interop, and **[docs/INTEROP.md](docs/INTEROP.md)** — bidirectional
+  interop vs the TypeScript SDK branch and mcpkit (Go).
 - **Backed by a real change engine** — [Drasi](https://github.com/drasi-project) continuous
   queries turn database WAL streams into semantic Added/Updated/Deleted diffs over a standing
   query's result set (a SQL `UPDATE` that drops a row below a query threshold arrives as a
@@ -45,7 +47,7 @@ Postgres ──WAL──▶ Drasi Server ──SSE reaction──▶ drasi-feed 
 | `mcp-events-server` | Axum server: `POST /mcp` dispatcher, all five `events/*` methods, push streams with heartbeats, webhook delivery worker (SSRF-guarded, watermark cursors, gap envelopes) |
 | `mcp-events-client` | Client library + `events-harness` CLI: `list` / `poll` / `stream` / `subscribe` / `unsubscribe` / `webhook-recv`, with cursor persistence and `eventId` dedup |
 
-**Verification:** 223 tests across the workspace; scripted e2e covering poll cursor
+**Verification:** 227 tests across the workspace; scripted e2e covering poll cursor
 persistence/resume, push streams (active/event/heartbeat frames), and the full webhook loop
 (challenge → signed deliveries → unsubscribe). Two adversarial spec-conformance reviews found
 no wire-visible nonconformance; their SHOULD-level notes are in
@@ -98,8 +100,10 @@ before/after) on in-set updates, `deleted` when an update crosses below the quer
 
 1. **[SPEC-GAPS.md](SPEC-GAPS.md)** — 58 deduplicated, severity-rated ambiguity findings from
    the clean-room build, each with the assumption this implementation made.
-2. **A third independent implementation** (after the TypeScript SDK branch and mcpkit/Go) for
-   cross-implementation interop testing — interop results land here as they are produced.
+2. **A third independent implementation** (after the TypeScript SDK branch and mcpkit/Go),
+   with a full bidirectional interop report ([docs/INTEROP.md](docs/INTEROP.md)) whose headline
+   is that the three implementations track three different sketch revisions — concrete evidence
+   for pinning the spec.
 3. **The Drasi bridge** as evidence for the sketch's open questions: delta-shaped payloads
    (`{before, after}`), durable-upstream cursor replay, multi-event-type feeds (open question
    4), and result-set-as-resource vs. diffs-as-events (open question 2).

@@ -560,3 +560,88 @@ The SDK is told to deduplicate by eventId, but nothing bounds the dedup memory (
 Findings against the base transport, not the events sketch: (1) no HTTP status is defined for a POST body that is not valid JSON or not a JSON-RPC message, nor whether JSON-RPC error responses ride on HTTP 200 or an error status; (2) the client MUST send Accept: application/json, text/event-stream, but no server behavior (406? ignore?) is specified when it is missing or excludes the content type the response requires. Both shape interop for any server implementing events over Streamable HTTP. (Merged from two reports.)
 
 **What this implementation assumed:** Unparseable JSON → HTTP 400 with -32700 body; non-request JSON → HTTP 200 with -32600; method-level errors on HTTP 200; Accept header ignored, content type chosen by method.
+
+
+---
+
+## Appendix: gaps surfaced by cross-implementation interop
+
+These are spec ambiguities confirmed by *observed divergence between independent
+implementations* — the strongest evidence class. Each was adjudicated against the sketch text.
+
+
+### events/stream final result frame: {} vs {"_meta":{}} (dup: ts-agent, wire-diff)
+
+Confirmed: TS _handleStream resolves {} mapped to EmptyResultSchema (events.ts:1164-1167); ours and mcpkit always emit {"_meta":{}} (mcpkit StreamEventsResult.Meta deliberately has no omitempty 'so the wire shape matches the spec example exactly', stream.go:42-46). The frame is defined to carry no information and _meta is optional on every MCP result type, so calling the TS shape a bug overreads a parenthetical example; but the fact that one implementer pinned the example exactly and another used {} shows the text is ambiguous. Static finding — no run ever exercised a server-initiated close.
+
+
+> The StreamEventsResult is an empty typed result ({"_meta": {}}). It carries no information (sketch §Push-Based Delivery, Lifecycle)
+
+
+**Recommendation:** add-to-spec-gaps — state that {} and {"_meta":{}} are equivalent empty results (or pin one normatively).
+
+
+### events capability advertisement: listChanged semantics (ts-agent)
+
+Confirmed: TS registers events:{listChanged: existing ?? true} unconditionally (events.ts:881-885) even for servers that never change their list; our mock advertises listChanged:false (handlers/initialize.rs:20-22); their client gates only on presence of the events key. Interop worked both ways (run1). The sketch genuinely never says whether events:{} is valid, what listChanged defaults to when absent, or that false is permitted — both implementations guessed compatibly but a third might not.
+
+
+> Servers advertise event support in their capabilities: {"capabilities":{"events":{"listChanged":true}}} (sketch §Capability Declaration — sole example, no prose on false/absent/default)
+
+
+**Recommendation:** add-to-spec-gaps — define listChanged default/absence and whether bare events:{} is a valid capability.
+
+
+### whsec_ secret base64 alphabet/padding (dup: mcpkit-agent, wire-diff)
+
+Confirmed: mcpkit generates whsec_ + base64.RawURLEncoding (URL-safe, unpadded; secret.go:44) and deliberately accepts both alphabets on input ('the SDKs don't agree on which they emit', secret.go:57-58); our parse_whsec requires the standard alphabet with padding (webhook.rs:4,30-41) and rejects their auto-generated secrets with -32602 before delivery is ever attempted; TS's regex accepts standard alphabet with optional padding (eventWebhook.ts:60). All three are defensible readings of 'base64'. Standard Webhooks examples use standard base64, which argues for pinning that, but the sketch text does not say so — every implementation guessed.
+
+
+> the literal prefix whsec_ followed by base64 of 24–64 random bytes. Servers MUST reject values that do not satisfy this with InvalidParams (sketch §events/subscribe notes) — alphabet and padding never specified.
+
+
+**Recommendation:** add-to-spec-gaps — pin the alphabet/padding (recommend standard base64, accept-both-on-input as a SHOULD); consider relaxing parse_whsec to accept URL-safe/unpadded input as interop hardening.
+
+
+### events/poll request cursor: absent vs null (wire-diff)
+
+Confirmed: TS requires the key (cursor: z.string().nullable(), not .optional(), schemas.ts:2229) so an omitting client gets InvalidParams; we and mcpkit treat absent ≡ null (events.rs:92-95 serde default; mcpkit *string). All examples in the sketch show the key present but no prose addresses omission. We always serialize the key (events.rs comment 'Always serialized'), so ours->TS works; this only bites third-party lenient clients.
+
+
+> Poll request example: '"cursor": null // null = start from now' (sketch §events/poll) — never states whether the key may be omitted.
+
+
+**Recommendation:** add-to-spec-gaps — state whether absent ≡ null on poll/stream/subscribe cursor (recommend yes, matching JSON-RPC conventions).
+
+
+### events/subscribe refresh with a cursor ahead of/unrelated to the live position (wire-diff)
+
+Confirmed both readings in code: our refresh treats any supplied cursor as a no-op and returns the stored watermark (webhook/handlers.rs:129-141 'Live refresh: the supplied cursor is a no-op'); TS documents and implements 'on refresh ... a non-null value replaces it' with _replayAfterCursor backlog re-delivery (schemas.ts:2362-2365, events.ts:1332-1344). The sketch's conditional only covers at-or-behind cursors, so both behaviors are defensible; observable difference is backlog re-POSTs from TS vs nothing from us.
+
+
+> If the subscription is live and the cursor is at or behind the current in-flight position, this is a no-op (sketch §Subscription Identity field table) — silent on a cursor ahead of, or unrelated to, the in-flight position.
+
+
+**Recommendation:** add-to-spec-gaps — define refresh semantics for a cursor ahead of/unrelated to the in-flight position (replace-and-replay vs ignore).
+
+
+### deliveryStatus field null-vs-absent presence rules (wire-diff)
+
+Confirmed: we always serialize lastDeliveryAt/lastError (null when none) and omit failedSince when absent (events.rs:203-213); TS is close to us; mcpkit omits all empty fields and the whole object when there is nothing to report (events.go:930-960 'Omitted on first subscribe — wire bloat'). All three agree on the load-bearing part (omitted on first subscribe, present on refresh) and the differences are absorbed by optional-field decoding. Minor.
+
+
+> Healthy-refresh example shows '"lastError": null' present (sketch §Webhook Delivery Status); the prose never states presence rules for lastDeliveryAt/lastError/failedSince or for the object itself.
+
+
+**Recommendation:** add-to-spec-gaps — one line stating null and absent are equivalent for deliveryStatus members (low priority).
+
+
+### Error message wording for shared codes: literal 'NotFound' vs descriptive text (mcpkit-agent)
+
+Confirmed: codes and typed data payloads agree between us and mcpkit (both -32011 + {kind}), but mcpkit sends the literal table token ('NotFound', 'Forbidden') as the message while we send descriptive strings ('unknown event type "nope"'). The sketch's own design intent ('clients still distinguish every case they branch on (by code, by method, or by a typed data discriminator)') implies messages are non-normative, but it never says so, and a message-matching client breaks one way or the other.
+
+
+> Error table: | -32011 | NotFound | A referenced entity does not exist... (sketch §Error Codes) — the table never says whether the Message column is normative literal wire text.
+
+
+**Recommendation:** add-to-spec-gaps — state that the Message column is a label, messages are non-normative free text, and clients MUST branch on code/data only.
