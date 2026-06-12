@@ -1,0 +1,36 @@
+[package]
+name = "mcp-events-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mcp-events-wire = { workspace = true }
+mcp-events-engine = { workspace = true }
+drasi-feed = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+clap = { workspace = true }
+url = { workspace = true }
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+subtle = { workspace = true }
+rand = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
