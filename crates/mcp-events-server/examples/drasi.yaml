@@ -1,0 +1,33 @@
+# Live Drasi config: consumes the SSE reaction of the demo environment in
+# drasi/ (docker compose up; see drasi/RUNBOOK.md).
+#   cargo run -p mcp-events-server -- --config crates/mcp-events-server/examples/drasi.yaml
+host: 127.0.0.1
+port: 8090
+authTokens:
+  - { token: devtoken, principal: dev@example.com }
+eventModeling: single
+buffer: { maxEventsPerType: 10000, maxAgeMs: 600000 }
+feed:
+  kind: drasiSse
+  # SSE reaction endpoint from drasi/server.yaml (port 8081, ssePath /events).
+  url: http://localhost:8081/events
+queries:
+  # Must match the continuous query id in drasi/server.yaml.
+  - id: high-value-orders
+    description: "Rows entering/leaving/changing in the high-value-orders continuous query (orders with total > 1000)"
+    payloadSchema:
+      type: object
+      properties:
+        id: { type: integer }
+        customer: { type: string }
+        total: { type: number }
+        status: { type: string }
+push: { heartbeatIntervalMs: 15000 }
+poll: { nextPollMs: 2000 }
+webhook:
+  enabled: true
+  ttlCapMs: 1800000
+  minTtlMs: 10000
+  maxSubscriptionsPerPrincipal: 16
+  allowInsecureUrls: false
+  suspendAfterFailures: 5

@@ -1,0 +1,75 @@
+# Drasi Server demo environment for the MCP Events prototype.
+#
+# Services:
+#   postgres      postgres:16 with logical replication (WAL) enabled, seeded
+#                 with the demo "orders" table (see seed.sql). Host port 5433
+#                 to avoid clashing with any local postgres on 5432.
+#   drasi-server  ghcr.io/drasi-project/drasi-server:0.1.0 configured by
+#                 server.yaml (postgres source -> high-value-orders continuous
+#                 query -> SSE reaction on port 8081).
+#
+# Usage: see RUNBOOK.md
+
+name: drasi-mcp-events-demo
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: drasi-demo-postgres
+    # Logical decoding is required by the Drasi postgres (WAL replication) source.
+    command: postgres -c wal_level=logical
+    environment:
+      POSTGRES_DB: demo
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot helper: installs the dynamic plugins required by server.yaml.
+  # Run manually before first `up`: docker compose run --rm plugin-install
+  plugin-install:
+    image: ghcr.io/drasi-project/drasi-server:0.1.6
+    profiles: [tools]
+    entrypoint: ["drasi-server"]
+    command: ["plugin", "install", "--from-config"]
+    volumes:
+      - ./server.yaml:/app/config/server.yaml:ro
+      - drasi-plugins:/usr/local/bin/plugins
+
+  drasi-server:
+    image: ghcr.io/drasi-project/drasi-server:0.1.6
+    container_name: drasi-demo-server
+    ports:
+      - "8080:8080"   # Drasi REST API (/health, /api/v1/...)
+      - "8081:8081"   # SSE reaction endpoint (GET /events)
+    volumes:
+      # The image's entrypoint is `drasi-server --config /app/config/server.yaml`.
+      # Mounted read-only; server.yaml sets persistConfig: false accordingly.
+      - ./server.yaml:/app/config/server.yaml:ro
+      # 0.1.x release images use dynamic plugins; postgres/sse plugins are
+      # installed into this volume once via:
+      #   docker compose run --rm plugin-install
+      - drasi-plugins:/usr/local/bin/plugins
+    environment:
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  drasi-plugins:

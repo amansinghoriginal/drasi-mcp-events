@@ -1,0 +1,86 @@
+# Drasi Server configuration for the MCP Events demo.
+# Field names follow the drasi-server config reference (camelCase throughout;
+# the server rejects unknown / snake_case fields).
+#
+# Topology:
+#   postgres source "orders-db"  (WAL logical replication on table "orders")
+#     -> Cypher continuous query "high-value-orders"  (orders with total > 1000)
+#       -> SSE reaction "orders-sse"  (GET http://localhost:8081/events)
+#
+# Note on the Cypher label: the Drasi postgres source labels each table row
+# node with the table name AS-IS (case-sensitive, no re-casing), so rows of
+# the "orders" table match (o:orders), not (o:Order).
+
+apiVersion: drasi.io/v1
+id: drasi-mcp-events-demo
+host: 0.0.0.0
+port: 8080
+logLevel: info
+# The config file is bind-mounted read-only; do not try to persist API changes.
+persistConfig: false
+# The 0.1.x release images default to cosign verification of dynamic plugins,
+# which refuses to load anything without a plugins.lock. Out of scope here.
+verifyPlugins: false
+
+# Dynamic plugins required by the sources/reactions below (0.1.x release images
+# are dynamic-plugin builds). Installed once into the compose volume via:
+#   docker compose run --rm plugin-install
+plugins:
+  - ref: source/postgres
+  - ref: bootstrap/postgres
+  - ref: reaction/sse
+
+sources:
+  - kind: postgres
+    id: orders-db
+    autoStart: true
+    host: postgres          # compose service name
+    port: 5432              # in-network port (5433 is only the host mapping)
+    database: demo
+    user: demo
+    password: demo
+    tables: [orders]
+    slotName: drasi_slot
+    publicationName: drasi_publication   # created by seed.sql
+    sslMode: disable
+    tableKeys:
+      - table: orders
+        keyColumns: [id]
+    bootstrapProvider:
+      kind: postgres
+      host: postgres
+      port: 5432
+      database: demo
+      user: demo
+      password: demo
+      tables: [orders]
+      slotName: drasi_slot
+      publicationName: drasi_publication
+      sslMode: disable
+      tableKeys:
+        - table: orders
+          keyColumns: [id]
+
+queries:
+  - id: high-value-orders
+    queryLanguage: Cypher
+    query: |
+      MATCH (o:orders)
+      WHERE o.total > 1000
+      RETURN o.id AS id, o.customer AS customer, o.total AS total, o.status AS status
+    sources:
+      - sourceId: orders-db
+    autoStart: true          # query autoStart defaults to false; must be explicit
+    enableBootstrap: true    # seed rows with total > 1000 enter the result set on startup
+
+reactions:
+  - kind: sse
+    id: orders-sse
+    queries: [high-value-orders]
+    autoStart: true
+    host: 0.0.0.0
+    port: 8081
+    ssePath: /events
+    heartbeatIntervalMs: 30000
+    # No routes / defaultTemplate configured: the reaction emits the built-in
+    # default JSON frame format documented in SSE-FORMAT.md.

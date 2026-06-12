@@ -1,0 +1,26 @@
+# Local development config: deterministic mock feed, no Drasi required.
+#   cargo run -p mcp-events-server -- --config crates/mcp-events-server/examples/mock.yaml
+host: 127.0.0.1
+port: 8090
+authTokens:
+  - { token: devtoken, principal: dev@example.com }
+eventModeling: single
+buffer: { maxEventsPerType: 10000, maxAgeMs: 600000 }
+feed:
+  kind: mock
+  queryId: high-value-orders
+  intervalMs: 1500
+queries:
+  - id: high-value-orders
+    description: "Rows entering/leaving/changing in the high-value-orders continuous query (synthetic orders scenario)"
+# 5s so heartbeats are observable in short local demo runs (sketch SHOULD is <=30s).
+push: { heartbeatIntervalMs: 5000 }
+poll: { nextPollMs: 2000 }
+webhook:
+  enabled: true
+  ttlCapMs: 1800000
+  minTtlMs: 10000
+  maxSubscriptionsPerPrincipal: 16
+  # LOCAL TESTING ONLY (nonconformant): allows http:// + loopback receivers.
+  allowInsecureUrls: true
+  suspendAfterFailures: 5
