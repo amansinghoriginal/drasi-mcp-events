@@ -272,7 +272,8 @@ pub fn spawn_feed_pipeline(state: Arc<AppState>) -> tokio::task::JoinHandle<()> 
 mod tests {
     use super::*;
     use crate::config::{
-        BufferSettings, FeedSettings, PollSettings, PushSettings, QueryConfig, WebhookSettings,
+        BufferSettings, FeedSettings, PollSettings, PushSettings, QueryConfig, ToolsSettings,
+        WebhookSettings,
     };
 
     fn config(mode: EventModeling, webhook_enabled: bool) -> ServerConfig {
@@ -280,6 +281,7 @@ mod tests {
             host: "127.0.0.1".into(),
             port: 0,
             auth_tokens: vec![],
+            tools: ToolsSettings::default(),
             event_modeling: mode,
             buffer: BufferSettings::default(),
             feed: FeedSettings {

@@ -55,7 +55,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Initialize and pretty-print the advertised event types.
+    /// server/discover (2026-07-28 stateless): print versions, capabilities
+    /// (including the events extension declaration), and server identity.
+    Discover,
+    /// Pretty-print the advertised event types.
     List,
     /// Poll loop for one subscription, honoring nextPollMs/hasMore.
     Poll {
@@ -147,6 +150,7 @@ async fn main() {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.cmd {
+        Cmd::Discover => cmd_discover(&cli.server, &cli.bearer).await,
         Cmd::List => cmd_list(&cli.server, &cli.bearer).await,
         Cmd::Poll {
             ref name,
@@ -199,13 +203,23 @@ async fn connect(server: &str, bearer: &Option<String>) -> anyhow::Result<Events
     if let Some(token) = bearer {
         client = client.with_bearer(token.clone());
     }
-    let init = client.initialize().await?;
+    // 2026-07-28 stateless lifecycle: no initialize handshake. server/discover
+    // is optional up-front version/capability discovery (SEP-2575).
+    let discovered = client.discover().await?;
+    let server_info = &discovered["_meta"][wire::META_SERVER_INFO];
+    let has_events_ext = discovered["capabilities"]["extensions"]
+        .get("io.modelcontextprotocol/events")
+        .is_some();
     info!(
-        server_name = %init.server_info.name,
-        server_version = %init.server_info.version,
-        protocol = %init.protocol_version,
-        "initialized"
+        server_name = %server_info["name"].as_str().unwrap_or("?"),
+        server_version = %server_info["version"].as_str().unwrap_or("?"),
+        versions = %discovered["supportedVersions"],
+        events_extension = has_events_ext,
+        "discovered (stateless, no handshake)"
     );
+    if !has_events_ext {
+        warn!("server does not declare the io.modelcontextprotocol/events extension");
+    }
     Ok(client)
 }
 
@@ -268,6 +282,16 @@ fn mode_str(m: &wire::DeliveryMode) -> &'static str {
 }
 
 // ---------------------------------------------------------------- list
+
+async fn cmd_discover(server: &str, bearer: &Option<String>) -> anyhow::Result<()> {
+    let mut client = EventsClient::new(server.to_owned());
+    if let Some(token) = bearer {
+        client = client.with_bearer(token.clone());
+    }
+    let discovered = client.discover().await?;
+    println!("{}", serde_json::to_string_pretty(&discovered)?);
+    Ok(())
+}
 
 async fn cmd_list(server: &str, bearer: &Option<String>) -> anyhow::Result<()> {
     let client = connect(server, bearer).await?;

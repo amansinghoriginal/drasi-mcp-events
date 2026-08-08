@@ -15,8 +15,12 @@ mod dispatch;
 mod handlers;
 #[path = "../src/mapping.rs"]
 mod mapping;
+#[path = "../src/mcp_service.rs"]
+mod mcp_service;
 #[path = "../src/state.rs"]
 mod state;
+#[path = "../src/tools_db.rs"]
+mod tools_db;
 #[path = "../src/webhook/mod.rs"]
 mod webhook;
 
@@ -88,6 +92,7 @@ fn test_config(webhook: WebhookSettings) -> ServerConfig {
         },
         poll: PollSettings { next_poll_ms: 50 },
         webhook,
+        tools: Default::default(),
     }
 }
 
@@ -101,7 +106,10 @@ async fn spawn_server(cfg: ServerConfig) -> (String, Arc<AppState>) {
         .await
         .expect("binding ephemeral port");
     let addr = listener.local_addr().expect("local addr");
-    let app = dispatch::router(state.clone());
+    let app = dispatch::router(
+        state.clone(),
+        dispatch::build_mcp_core(state.config.tools.postgres_url.clone()),
+    );
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serving");
     });
@@ -612,7 +620,11 @@ async fn subscribe_challenge_delivery_rotation_unsubscribe() {
         json!({"name": EVENT, "delivery": {"url": hook}}),
     )
     .await;
-    assert_eq!(body["result"], json!({}), "empty ack");
+    assert_eq!(
+        body["result"],
+        json!({"resultType": "complete"}),
+        "ack carries only the SEP-2322 resultType discriminator"
+    );
     let body = rpc(
         &client,
         &url,
@@ -622,7 +634,7 @@ async fn subscribe_challenge_delivery_rotation_unsubscribe() {
         json!({"name": EVENT, "params": {"changeType": "added"}, "delivery": {"url": hook}}),
     )
     .await;
-    assert_eq!(body["result"], json!({}));
+    assert_eq!(body["result"], json!({"resultType": "complete"}));
 
     // Unknown after removal.
     let body = rpc(

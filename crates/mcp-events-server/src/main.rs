@@ -5,7 +5,9 @@ mod config;
 mod dispatch;
 mod handlers;
 mod mapping;
+mod mcp_service;
 mod state;
+mod tools_db;
 mod webhook;
 
 use std::path::PathBuf;
@@ -39,12 +41,17 @@ async fn main() -> anyhow::Result<()> {
         webhook::worker::spawn_delivery_worker(state.clone());
     }
 
+    let mcp = dispatch::build_mcp_core(state.config.tools.postgres_url.clone());
+
     let addr = format!("{}:{}", state.config.host, state.config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
-    tracing::info!(addr = %listener.local_addr()?, "mcp-events-server listening (POST /mcp, GET /healthz)");
-    axum::serve(listener, dispatch::router(state))
+    tracing::info!(
+        addr = %listener.local_addr()?,
+        "hybrid MCP server listening (rmcp core + events extension on POST /mcp, GET /healthz)"
+    );
+    axum::serve(listener, dispatch::router(state, mcp))
         .await
         .context("serving HTTP")?;
     Ok(())

@@ -1,7 +1,6 @@
-//! JSON-RPC method handlers (server-core: initialize, ping handled inline,
-//! events/list, events/poll, events/stream).
+//! JSON-RPC method handlers for the events extension (events/list,
+//! events/poll, events/stream; initialize and the MCP core now live in rmcp).
 
-pub mod initialize;
 pub mod list;
 pub mod poll;
 pub mod stream;

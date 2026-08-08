@@ -57,7 +57,42 @@ async fn mcp_handler(headers: HeaderMap, body: Bytes) -> Response {
         .get("mcp-session-id")
         .map(|v| v.as_bytes() == SESSION_ID.as_bytes())
         .unwrap_or(false);
+    // 2026-07-28 stateless lifecycle markers (SEP-2243 headers + SEP-2575
+    // _meta): the client must self-describe on every request — no session.
+    let stateless_ok = headers
+        .get("mcp-protocol-version")
+        .map(|v| v.as_bytes() == b"2026-07-28")
+        .unwrap_or(false)
+        && headers
+            .get("mcp-method")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == req.method)
+            .unwrap_or(false)
+        && req
+            .params
+            .as_ref()
+            .and_then(|p| p.get("_meta"))
+            .and_then(|m| m.get("io.modelcontextprotocol/protocolVersion"))
+            .map(|v| v == "2026-07-28")
+            .unwrap_or(false);
     match req.method.as_str() {
+        "server/discover" => {
+            if !stateless_ok {
+                return (StatusCode::BAD_REQUEST, "missing stateless markers").into_response();
+            }
+            json_response(
+                req.id,
+                json!({
+                    "resultType": "complete",
+                    "supportedVersions": ["2025-11-25", "2026-07-28"],
+                    "capabilities": {"extensions": {"io.modelcontextprotocol/events": {}}},
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                    "_meta": {"io.modelcontextprotocol/serverInfo":
+                        {"name": "mock-server", "version": "0.0.0"}}
+                }),
+            )
+        }
         "initialize" => {
             let result = json!({
                 "protocolVersion": "2025-11-25",
@@ -81,14 +116,15 @@ async fn mcp_handler(headers: HeaderMap, body: Bytes) -> Response {
                 .into_response()
         }
         "notifications/initialized" => {
+            // Legacy handshake epilogue: still session-scoped.
             if !has_session {
                 return (StatusCode::BAD_REQUEST, "missing session id").into_response();
             }
             StatusCode::ACCEPTED.into_response()
         }
         "events/list" => {
-            if !has_session {
-                return (StatusCode::BAD_REQUEST, "missing session id").into_response();
+            if !stateless_ok {
+                return (StatusCode::BAD_REQUEST, "missing stateless markers").into_response();
             }
             json_response(
                 req.id,
@@ -102,8 +138,8 @@ async fn mcp_handler(headers: HeaderMap, body: Bytes) -> Response {
             )
         }
         "events/poll" => {
-            if !has_session {
-                return (StatusCode::BAD_REQUEST, "missing session id").into_response();
+            if !stateless_ok {
+                return (StatusCode::BAD_REQUEST, "missing stateless markers").into_response();
             }
             let params: wire::PollEventsParams =
                 serde_json::from_value(req.params.unwrap_or(Value::Null)).unwrap();
@@ -190,11 +226,24 @@ async fn spawn_mock() -> String {
 async fn initialize_list_and_poll() {
     let url = spawn_mock().await;
     let mut client = EventsClient::new(url);
+
+    // Legacy back-compat path still works (initialize handshake + session).
     let init = client.initialize().await.unwrap();
     assert_eq!(init.protocol_version, "2025-11-25");
     assert!(init.capabilities.events.is_some());
 
-    // session id captured during initialize must reach subsequent calls
+    // 2026-07-28 stateless entry point: server/discover, no handshake needed.
+    let discovered = client.discover().await.unwrap();
+    assert_eq!(discovered["resultType"], "complete");
+    assert!(
+        discovered["capabilities"]["extensions"]["io.modelcontextprotocol/events"].is_object()
+    );
+    assert_eq!(
+        discovered["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "mock-server"
+    );
+
+    // events/* calls self-describe per request (stateless markers), no session
     let list = client.list_events().await.unwrap();
     assert_eq!(list.events.len(), 1);
     assert_eq!(list.events[0].name, "orders.changed");

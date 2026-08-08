@@ -3,12 +3,17 @@
 /// MCP protocol version implemented by this prototype.
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
 
+/// Latest MCP protocol version: stateless lifecycle (SEP-2575), no
+/// initialize handshake, per-request `_meta` self-description.
+pub const PROTOCOL_VERSION_2026_07_28: &str = "2026-07-28";
+
 /// JSON-RPC version string carried in every message.
 pub const JSONRPC_VERSION: &str = "2.0";
 
 // MCP base methods / notifications.
 pub const METHOD_INITIALIZE: &str = "initialize";
 pub const METHOD_PING: &str = "ping";
+pub const METHOD_SERVER_DISCOVER: &str = "server/discover";
 pub const NOTIF_INITIALIZED: &str = "notifications/initialized";
 
 // Events extension methods.
@@ -29,6 +34,12 @@ pub const NOTIF_EVENTS_LIST_CHANGED: &str = "notifications/events/list_changed";
 /// `_meta` key carrying the parent `events/stream` request id on every
 /// `notifications/events/*` frame (SEP-2575 correlation convention).
 pub const META_SUBSCRIPTION_ID: &str = "io.modelcontextprotocol/subscriptionId";
+
+// SEP-2575 stateless-lifecycle `_meta` keys (2026-07-28).
+pub const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+pub const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
+pub const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
 
 // Webhook delivery headers (HTTP header names are case-insensitive; lowercase canonical).
 pub const HEADER_WEBHOOK_ID: &str = "webhook-id";

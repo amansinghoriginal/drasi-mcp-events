@@ -107,6 +107,51 @@ impl EventsClient {
         Ok(rb)
     }
 
+    /// Request builder for the 2026-07-28 stateless lifecycle: SEP-2243
+    /// standard headers (`MCP-Protocol-Version`, `Mcp-Method`), no session.
+    fn stateless_builder(&self, method: &str) -> anyhow::Result<reqwest::RequestBuilder> {
+        let http = self
+            .http
+            .as_ref()
+            .map_err(|e| anyhow!("failed to construct HTTP client: {e}"))?;
+        let mut rb = http
+            .post(&self.base_url)
+            .header(reqwest::header::ACCEPT, ACCEPT_BOTH)
+            .header(HEADER_PROTOCOL_VERSION, wire::PROTOCOL_VERSION_2026_07_28)
+            .header("mcp-method", method);
+        if let Some(token) = &self.bearer {
+            rb = rb.bearer_auth(token);
+        }
+        Ok(rb)
+    }
+
+    /// Injects the SEP-2575 stateless-lifecycle `_meta` (protocol version,
+    /// client capabilities, client identity) into a request's params.
+    fn with_stateless_meta(params: Option<Value>) -> Value {
+        let mut obj = match params {
+            Some(Value::Object(m)) => m,
+            _ => serde_json::Map::new(),
+        };
+        obj.entry("_meta").or_insert_with(|| {
+            json!({
+                wire::META_PROTOCOL_VERSION: wire::PROTOCOL_VERSION_2026_07_28,
+                wire::META_CLIENT_CAPABILITIES: {},
+                wire::META_CLIENT_INFO: {
+                    "name": "mcp-events-client",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+            })
+        });
+        Value::Object(obj)
+    }
+
+    /// 2026-07-28 stateless entry point: `server/discover` returns the
+    /// server's supported protocol versions, capabilities (including the
+    /// events extension declaration), and identity — no handshake, no session.
+    pub async fn discover(&self) -> anyhow::Result<Value> {
+        self.call(wire::METHOD_SERVER_DISCOVER, None).await
+    }
+
     /// MCP handshake: `initialize`, then `notifications/initialized` (which
     /// must be acknowledged with HTTP 202). Captures the `Mcp-Session-Id`
     /// response header for all subsequent requests.
@@ -211,11 +256,13 @@ impl EventsClient {
         let req = wire::JsonRpcRequest::request(
             id,
             wire::METHOD_EVENTS_STREAM,
-            Some(serde_json::to_value(params)?),
+            Some(Self::with_stateless_meta(Some(serde_json::to_value(
+                params,
+            )?))),
         );
         // Deliberately no request timeout: heartbeats are the liveness signal.
         let resp = self
-            .builder()?
+            .stateless_builder(wire::METHOD_EVENTS_STREAM)?
             .json(&req)
             .send()
             .await
@@ -292,9 +339,10 @@ impl EventsClient {
         params: Option<Value>,
     ) -> anyhow::Result<T> {
         let id = self.next_id();
-        let req = wire::JsonRpcRequest::request(id, method, params);
+        let req =
+            wire::JsonRpcRequest::request(id, method, Some(Self::with_stateless_meta(params)));
         let resp = self
-            .builder()?
+            .stateless_builder(method)?
             .timeout(UNARY_TIMEOUT)
             .json(&req)
             .send()

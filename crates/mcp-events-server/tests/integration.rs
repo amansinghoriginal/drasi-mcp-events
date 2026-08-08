@@ -14,8 +14,12 @@ mod dispatch;
 mod handlers;
 #[path = "../src/mapping.rs"]
 mod mapping;
+#[path = "../src/mcp_service.rs"]
+mod mcp_service;
 #[path = "../src/state.rs"]
 mod state;
+#[path = "../src/tools_db.rs"]
+mod tools_db;
 #[path = "../src/webhook/mod.rs"]
 mod webhook;
 
@@ -65,6 +69,7 @@ fn test_config() -> ServerConfig {
             enabled: false,
             ..WebhookSettings::default()
         },
+        tools: Default::default(),
     }
 }
 
@@ -75,7 +80,10 @@ async fn spawn_server(cfg: ServerConfig) -> (String, Arc<AppState>) {
         .await
         .expect("binding ephemeral port");
     let addr = listener.local_addr().expect("local addr");
-    let app = dispatch::router(state.clone());
+    let app = dispatch::router(
+        state.clone(),
+        dispatch::build_mcp_core(state.config.tools.postgres_url.clone()),
+    );
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serving");
     });
@@ -173,50 +181,45 @@ async fn collect_frames(
 }
 
 #[tokio::test]
-async fn initialize_list_poll_flow() {
+async fn discover_list_poll_flow() {
     let (url, _state) = spawn_server(test_config()).await;
     let client = reqwest::Client::new();
 
-    // --- initialize: version, capabilities, session header ---
-    let resp = rpc_response(
-        &client,
-        &url,
-        1,
-        "initialize",
-        json!({
-            "protocolVersion": "2025-11-25",
-            "capabilities": {},
-            "clientInfo": { "name": "integration-test", "version": "0.0.0" }
-        }),
-    )
-    .await;
-    assert_eq!(resp.status(), 200);
-    assert!(
-        resp.headers().get("mcp-session-id").is_some(),
-        "initialize must issue Mcp-Session-Id"
-    );
-    let body: Value = resp.json().await.expect("init body");
-    assert_eq!(body["result"]["protocolVersion"], "2025-11-25");
-    assert_eq!(
-        body["result"]["capabilities"]["events"]["listChanged"],
-        json!(false)
-    );
-    assert!(body["result"]["serverInfo"]["name"].is_string());
-
-    // --- notifications/initialized: 202, empty body ---
+    // --- server/discover (2026-07-28 stateless lifecycle, served by rmcp):
+    //     version list, tools capability, events extension declaration,
+    //     server identity in _meta ---
     let resp = client
         .post(&url)
         .header("accept", "application/json, text/event-stream")
-        .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "server/discover")
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }}
+        }))
         .send()
         .await
-        .expect("notification send");
-    assert_eq!(resp.status(), 202);
-    assert!(resp.bytes().await.expect("body").is_empty());
-
-    // --- ping ---
-    let body = rpc(&client, &url, 2, "ping", json!({})).await;
-    assert_eq!(body["result"], json!({}));
+        .expect("discover send");
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.expect("discover body");
+    let result = &body["result"];
+    assert_eq!(result["resultType"], "complete");
+    assert!(result["supportedVersions"]
+        .as_array()
+        .expect("supportedVersions")
+        .contains(&json!("2026-07-28")));
+    assert!(result["capabilities"]["tools"].is_object());
+    assert!(
+        result["capabilities"]["extensions"]["io.modelcontextprotocol/events"].is_object(),
+        "events extension must be declared in the extensions capability map"
+    );
+    assert!(
+        result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"].is_string(),
+        "serverInfo lives in _meta on 2026-07-28"
+    );
 
     // --- events/list ---
     let body = rpc(&client, &url, 3, "events/list", json!({})).await;

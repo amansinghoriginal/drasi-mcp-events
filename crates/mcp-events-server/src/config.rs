@@ -29,6 +29,29 @@ pub struct ServerConfig {
     pub poll: PollSettings,
     #[serde(default)]
     pub webhook: WebhookSettings,
+    #[serde(default)]
+    pub tools: ToolsSettings,
+}
+
+/// Postgres connection for the rmcp demo tools (get_order,
+/// get_customer_history, flag_order). Defaults to the drasi/ demo database.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolsSettings {
+    #[serde(default = "default_tools_postgres_url")]
+    pub postgres_url: String,
+}
+
+impl Default for ToolsSettings {
+    fn default() -> Self {
+        Self {
+            postgres_url: default_tools_postgres_url(),
+        }
+    }
+}
+
+fn default_tools_postgres_url() -> String {
+    "host=localhost port=5433 user=demo password=demo dbname=demo".to_string()
 }
 
 #[derive(Clone, Debug, Deserialize)]

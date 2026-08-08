@@ -39,6 +39,13 @@ uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
 url = "2"
 bytes = "1"
+tokio-postgres = "0.7"
+# Official MCP Rust SDK (Route-1 hybrid: rmcp serves the MCP core + tools,
+# the hand-written handlers serve the draft events/* extension methods).
+rmcp = { version = "3.1.2", features = ["transport-streamable-http-server"] }
+schemars = "1"
+http-body-util = "0.1"
+tokio-util = "0.7"
 
 mcp-events-wire = { path = "crates/mcp-events-wire" }
 mcp-events-engine = { path = "crates/mcp-events-engine" }

@@ -32,5 +32,10 @@ hex = { workspace = true }
 subtle = { workspace = true }
 rand = { workspace = true }
 bytes = { workspace = true }
+tokio-postgres = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+http-body-util = { workspace = true }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
