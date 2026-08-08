@@ -5,6 +5,7 @@ members = [
     "crates/drasi-feed",
     "crates/mcp-events-server",
     "crates/mcp-events-client",
+    "crates/mcp-events-agent",
 ]
 resolver = "2"
 
@@ -50,3 +51,4 @@ tokio-util = "0.7"
 mcp-events-wire = { path = "crates/mcp-events-wire" }
 mcp-events-engine = { path = "crates/mcp-events-engine" }
 drasi-feed = { path = "crates/drasi-feed" }
+mcp-events-client = { path = "crates/mcp-events-client" }

@@ -1,0 +1,24 @@
+[package]
+name = "mcp-events-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "drasi-agent"
+path = "src/main.rs"
+
+[dependencies]
+mcp-events-wire = { workspace = true }
+mcp-events-client = { workspace = true }
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+tokio = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
