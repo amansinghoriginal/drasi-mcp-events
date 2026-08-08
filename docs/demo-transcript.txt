@@ -1,0 +1,89 @@
+# Demo transcript — captured live 2026-08-08 16:04 PDT
+# Environment: fresh 'docker compose down -v' → plugin-install → up; cargo-built binaries.
+
+## events-harness discover (excerpt: the extension declaration)
+{
+  "resultType": "complete",
+  "supportedVersions": [
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    "2025-11-25",
+    "2026-07-28"
+  ],
+  "capabilities": {
+    "extensions": {
+      "io.modelcontextprotocol/events": {
+        "delivery": [
+          "poll",
+          "push",
+          "webhook"
+        ],
+        "methods": [
+          "events/list",
+          "events/poll",
+          "events/stream",
+          "events/subscribe",
+          "events/unsubscribe"
+        ]
+      }
+    },
+    "tools": {}
+  },
+  "_meta": {
+    "io.modelcontextprotocol/serverInfo": {
+      "name": "drasi-mcp-events",
+      "title": "Drasi-backed MCP server: orders tools + draft Events extension",
+      "version": "0.1.0"
+    }
+  }
+}
+
+## drasi-agent (policy brain) — three acts + laptop-closed replay
+[16:03:38] discovered drasi-mcp-events v0.1.0 (stateless 2026-07-28, no handshake) — events extension: yes
+[16:03:38]   tools (official Rust SDK): flag_order, get_customer_history, get_order
+[16:03:38] brain: policy (deterministic)
+[16:03:38] subscribing to high-value-orders.changed via events/stream …
+[16:03:38] stream active (cursor Some("6959621619933716582:0"))
+[16:03:41] EVENT ADDED order 5 (ivy, $7200) — waking agent
+[16:03:41]   tool → get_order({"order_id":5})
+[16:03:41]     ← {"customer":"ivy","id":5,"status":"open","total":7200.0}
+[16:03:41]   tool → get_customer_history({"customer":"ivy"})
+[16:03:41]     ← {"customer":"ivy","lifetimeTotal":7200.0,"orderCount":1,"orders":[{"id":5,"status":"open","total":7200.0}],"priorFlags":[]}
+[16:03:41]   tool → flag_order({"order_id":5,"reason":"first-ever order for ivy at $7200"})
+[16:03:41]     ← {"flagId":1,"flaggedAt":"2026-08-08 23:03:41.595535+00","flaggedBy":"mcp-events-demo-agent","orderId":5,"reason":"first-ever order for ivy at $7200"}
+[16:03:41]   agent: Flagged order 5 for review (flag #1): first-ever order for ivy at $7200.
+[16:03:41] agent idle — waiting for next event
+[16:03:45] EVENT UPDATED order 3 (carol, $2350) — waking agent
+[16:03:45]   tool → get_order({"order_id":3})
+[16:03:45]     ← {"customer":"carol","id":3,"status":"shipped","total":2350.0}
+[16:03:45]   tool → get_customer_history({"customer":"carol"})
+[16:03:45]     ← {"customer":"carol","lifetimeTotal":2350.0,"orderCount":1,"orders":[{"id":3,"status":"shipped","total":2350.0}],"priorFlags":[]}
+[16:03:45]   agent: Order 3 (carol, $2350) looks routine for this customer; no action taken.
+[16:03:45] agent idle — waiting for next event
+[16:03:49] EVENT DELETED order 5 (ivy, $7200) — waking agent
+[16:03:49]   agent: Order 5 (ivy) left the high-value set; no action needed.
+[16:03:49] agent idle — waiting for next event
+[16:03:56] discovered drasi-mcp-events v0.1.0 (stateless 2026-07-28, no handshake) — events extension: yes
+[16:03:56]   tools (official Rust SDK): flag_order, get_customer_history, get_order
+[16:03:56] brain: policy (deterministic)
+[16:03:56] resuming from persisted cursor Some("6959621619933716582:3")
+[16:03:56] subscribing to high-value-orders.changed via events/stream …
+[16:03:56] stream active (cursor Some("6959621619933716582:3"))
+[16:03:56] EVENT ADDED order 6 (jack, $12000) — waking agent
+[16:03:56]   tool → get_order({"order_id":6})
+[16:03:56]     ← {"customer":"jack","id":6,"status":"open","total":12000.0}
+[16:03:56]   tool → get_customer_history({"customer":"jack"})
+[16:03:56]     ← {"customer":"jack","lifetimeTotal":12000.0,"orderCount":1,"orders":[{"id":6,"status":"open","total":12000.0}],"priorFlags":[]}
+[16:03:56]   tool → flag_order({"order_id":6,"reason":"first-ever order for jack at $12000"})
+[16:03:56]     ← {"flagId":2,"flaggedAt":"2026-08-08 23:03:56.897266+00","flaggedBy":"mcp-events-demo-agent","orderId":6,"reason":"first-ever order for jack at $12000"}
+[16:03:56]   agent: Flagged order 6 for review (flag #2): first-ever order for jack at $12000.
+[16:03:56] agent idle — waiting for next event
+
+## order_flags audit trail
+ order_id |               reason                |      flagged_by       
+----------+-------------------------------------+-----------------------
+        5 | first-ever order for ivy at $7200   | mcp-events-demo-agent
+        6 | first-ever order for jack at $12000 | mcp-events-demo-agent
+(2 rows)
+

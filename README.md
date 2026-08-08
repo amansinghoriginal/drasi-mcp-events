@@ -28,24 +28,40 @@ design sketch. Existing prototypes (TypeScript, Go) wrap simulated SaaS feeds. T
   semantic *delete*). That exercises delta payloads, cursor replay, and subscription
   provisioning in ways synthetic feeds cannot.
 
+> **Demo:** the end-to-end walkthrough (Drasi → hybrid server → agent that wakes, verifies
+> via tools, and acts) is scripted in **[DEMO.md](DEMO.md)**, with a captured live transcript
+> in [`docs/demo-transcript.txt`](docs/demo-transcript.txt).
+
 ## What's here
 
 ```
-Postgres ──WAL──▶ Drasi Server ──SSE reaction──▶ drasi-feed ──▶ event buffer ──▶ MCP Events server
-                  (drasi/ docker env)                            (epoch:seq cursors)   POST /mcp
-                                                                                        │
-                                              events/list · events/poll · events/stream (SSE)
-                                              events/subscribe · events/unsubscribe (webhooks,
-                                              Standard-Webhooks signed, challenge-verified, TTL)
+Postgres ──WAL──▶ Drasi Server ──SSE reaction──▶ drasi-feed ──▶ event buffer ──▶ hybrid MCP server (POST /mcp)
+                  (drasi/ docker env)                            (epoch:seq cursors)   │
+                          ┌────────────────────────────────────────────────────────────┤
+                          │ official Rust SDK (rmcp 3.1.x): server/discover, 2026-07-28│
+                          │ stateless lifecycle, tools/* (get_order, get_customer_     │
+                          │ history, flag_order), legacy initialize back-compat        │
+                          │ draft Events extension (this repo): events/list · poll ·   │
+                          │ stream (SSE) · subscribe/unsubscribe (Standard-Webhooks    │
+                          │ signed, challenge-verified, TTL)                           │
+                          └──────────────────────────────────────────────△─────────────┘
+                                                                         │ wakes
+                                              drasi-agent (crates/mcp-events-agent):
+                                              events/stream ▶ Claude or policy ▶ tools ▶ order_flags
 ```
+
+The server declares the extension in the 2026-07-28 `extensions` capability map as
+`io.modelcontextprotocol/events`; MCP core methods are served by the official SDK, the five
+`events/*` methods by the extension dispatcher in front of it.
 
 | Crate | What it is |
 |---|---|
 | `mcp-events-wire` | Wire types: JSON-RPC 2.0 + MCP base subset + the full Events extension, Standard Webhooks sign/verify |
 | `mcp-events-engine` | Per-event-type ring buffer with the sketch's full cursor lifecycle (`truncated`, `maxAgeMs`, `hasMore`), webhook subscription store (compound identity, TTL, quotas, suspension, verification cache) |
 | `drasi-feed` | Drasi SSE-reaction consumer (format: [`drasi/SSE-FORMAT.md`](drasi/SSE-FORMAT.md), live-verified) + deterministic mock feed |
-| `mcp-events-server` | Axum server: `POST /mcp` dispatcher, all five `events/*` methods, push streams with heartbeats, webhook delivery worker (SSRF-guarded, watermark cursors, gap envelopes) |
-| `mcp-events-client` | Client library + `events-harness` CLI: `list` / `poll` / `stream` / `subscribe` / `unsubscribe` / `webhook-recv`, with cursor persistence and `eventId` dedup |
+| `mcp-events-server` | Hybrid server: rmcp (official SDK) serves the MCP core + three Postgres-backed demo tools; an axum dispatcher in front serves the five `events/*` methods — push streams with heartbeats, webhook delivery worker (SSRF-guarded, watermark cursors, gap envelopes) |
+| `mcp-events-client` | Client library + `events-harness` CLI: `discover` / `list` / `poll` / `stream` / `subscribe` / `unsubscribe` / `webhook-recv`, 2026-07-28 stateless lifecycle (SEP-2243 headers + SEP-2575 `_meta`), cursor persistence, `eventId` dedup |
+| `mcp-events-agent` | `drasi-agent`: the events × tools loop — `events/stream` wakes it, it verifies via the official-SDK client (`server/discover` lifecycle) and acts with `flag_order`; Claude tool-use brain or deterministic policy |
 
 **Verification:** 227 tests across the workspace; scripted e2e covering poll cursor
 persistence/resume, push streams (active/event/heartbeat frames), and the full webhook loop
