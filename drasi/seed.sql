@@ -21,8 +21,20 @@ INSERT INTO orders (customer, total, status) VALUES
     ('carol', 2200.50, 'shipped'),   -- above threshold: in query result set
     ('dave',   999.99, 'pending');   -- below threshold (boundary, NOT > 1000)
 
+-- Agent actions land here (written by the flag_order MCP tool). Kept as a
+-- separate table so flagging an order does not touch `orders` and therefore
+-- cannot re-trigger the continuous query (no event feedback loop).
+CREATE TABLE order_flags (
+    id         serial PRIMARY KEY,
+    order_id   integer     NOT NULL,
+    reason     text        NOT NULL,
+    flagged_by text        NOT NULL,
+    flagged_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- The Drasi postgres source consumes logical replication through this
 -- publication (publicationName in server.yaml). It must exist before the
 -- source starts; the replication slot ("drasi_slot") is created automatically
 -- by the source itself (CREATE_REPLICATION_SLOT, idempotent on restart).
+-- Note: only `orders` is published — order_flags changes stay out of the WAL feed.
 CREATE PUBLICATION drasi_publication FOR TABLE orders;

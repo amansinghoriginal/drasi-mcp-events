@@ -40,6 +40,9 @@ services:
     profiles: [tools]
     entrypoint: ["drasi-server"]
     command: ["plugin", "install", "--from-config"]
+    # The image runs as user `drasi`, but a fresh named volume is root-owned —
+    # without this the install fails with "failed to write plugin binary".
+    user: root
     volumes:
       - ./server.yaml:/app/config/server.yaml:ro
       - drasi-plugins:/usr/local/bin/plugins
