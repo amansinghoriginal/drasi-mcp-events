@@ -63,6 +63,10 @@ struct LlmConfig {
 enum Provider {
     Anthropic,
     OpenAi,
+    /// OpenAI Responses API (`/responses` — Azure v1 gpt-5.x deployments):
+    /// `input` items instead of `messages`, flat function tools,
+    /// `previous_response_id` chaining for the tool loop.
+    OpenAiResponses,
 }
 
 impl LlmConfig {
@@ -70,19 +74,30 @@ impl LlmConfig {
     /// `ANTHROPIC_API_KEY` keeps working as the zero-config path.
     fn from_env(default_model: &str) -> Option<Self> {
         let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-        let provider = match get("LLM_PROVIDER").as_deref() {
+        let mut provider = match get("LLM_PROVIDER").as_deref() {
             Some("openai") => Provider::OpenAi,
+            Some("openai-responses" | "responses") => Provider::OpenAiResponses,
             Some("anthropic") | None => Provider::Anthropic,
             Some(other) => {
-                tracing::warn!(provider = other, "unknown LLM_PROVIDER; expected anthropic|openai");
+                tracing::warn!(
+                    provider = other,
+                    "unknown LLM_PROVIDER; expected anthropic|openai|openai-responses"
+                );
                 return None;
             }
         };
         let api_key = get("LLM_API_KEY").or_else(|| get("ANTHROPIC_API_KEY"))?;
         let chat_url = get("LLM_CHAT_URL").unwrap_or_else(|| ANTHROPIC_URL.to_owned());
-        if provider == Provider::OpenAi && chat_url == ANTHROPIC_URL {
-            tracing::warn!("LLM_PROVIDER=openai requires LLM_CHAT_URL");
+        if provider != Provider::Anthropic && chat_url == ANTHROPIC_URL {
+            tracing::warn!("LLM_PROVIDER=openai* requires LLM_CHAT_URL");
             return None;
+        }
+        // A /responses URL is unambiguous — upgrade the dialect so a pasted
+        // Azure v1 Responses endpoint Just Works with LLM_PROVIDER=openai.
+        if provider == Provider::OpenAi
+            && chat_url.split('?').next().is_some_and(|p| p.ends_with("/responses"))
+        {
+            provider = Provider::OpenAiResponses;
         }
         let model = get("LLM_MODEL").unwrap_or_else(|| default_model.to_owned());
         Some(Self { provider, chat_url, api_key, model })
@@ -130,9 +145,19 @@ struct Cli {
     /// MCP server endpoint (Streamable HTTP).
     #[arg(long, default_value = "http://127.0.0.1:8090/mcp")]
     server: String,
-    /// Event type to subscribe to.
-    #[arg(long, default_value = "high-value-orders.changed")]
-    event: String,
+    /// A task for the agent. It discovers the event catalog (events/list),
+    /// chooses the stream relevant to this task (LLM decides in llm mode,
+    /// keyword scoring in policy mode), and subscribes with fitting arguments.
+    /// Example: --task "You are on-call: watch for P1 incidents and escalate"
+    #[arg(long)]
+    task: Option<String>,
+    /// Manual override: subscribe to this exact event type (skips discovery
+    /// choice). Defaults to high-value-orders.changed when no --task is given.
+    #[arg(long)]
+    event: Option<String>,
+    /// Manual override: subscription arguments as a JSON object.
+    #[arg(long)]
+    params: Option<String>,
     /// auto = llm when credentials are configured (env or .env), else policy.
     #[arg(long, default_value = "auto", value_parser = ["auto", "llm", "claude", "policy"])]
     mode: String,
@@ -241,6 +266,76 @@ async fn main() -> Result<()> {
     ));
 
     let http = reqwest::Client::new();
+
+    // Resolve WHAT to subscribe to: task-driven discovery, or manual override.
+    let catalog = events_client.list_events().await.context("events/list")?.events;
+    let chosen = if let Some(task) = &cli.task {
+        log(format!("task: {task}"));
+        log(format!(
+            "discovering event streams via events/list — {} available:",
+            catalog.len()
+        ));
+        for d in &catalog {
+            let desc: String = d
+                .description
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(88)
+                .collect();
+            log2(format!("· {} — {desc}…", d.name));
+        }
+        let choice = match (&llm, mode) {
+            (Some(cfg), "llm") => match llm_choose(cfg, &http, task, &catalog).await {
+                Ok(c) => c,
+                Err(error) => {
+                    log(format!(
+                        "llm chooser failed ({error:#}); falling back to keyword matching"
+                    ));
+                    policy_choose(task, &catalog)
+                }
+            },
+            _ => policy_choose(task, &catalog),
+        };
+        log(format!(
+            "chose {} (arguments: {}) — {}",
+            choice.name,
+            choice
+                .arguments
+                .as_ref()
+                .map(Value::to_string)
+                .unwrap_or_else(|| "none".into()),
+            choice.rationale
+        ));
+        choice
+    } else {
+        Chosen {
+            name: cli
+                .event
+                .clone()
+                .unwrap_or_else(|| "high-value-orders.changed".to_owned()),
+            arguments: cli
+                .params
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .context("--params must be a JSON object")?,
+            rationale: String::new(),
+        }
+    };
+
+    // Demo theater in task mode: visible "other work" that events interrupt.
+    if cli.task.is_some() {
+        tokio::spawn(async {
+            let mut tick = 0u64;
+            loop {
+                tokio::time::sleep(Duration::from_secs(8)).await;
+                tick += 1;
+                log(format!("[background] routine batch work continues … (tick {tick})"));
+            }
+        });
+    }
+
     let mut cursor = load_state(&cli.state_file)?.unwrap_or_default().cursor;
     if cursor.is_some() {
         log(format!("resuming from persisted cursor {cursor:?}"));
@@ -248,12 +343,12 @@ async fn main() -> Result<()> {
     let mut backoff = Duration::from_secs(1);
     // (event_id, attempt count) for the event currently failing, if any.
     let mut failures: Option<(String, u32)> = None;
-    log(format!("subscribing to {} via events/stream …", cli.event));
+    log(format!("subscribing to {} via events/stream …", chosen.name));
 
     loop {
         let params = wire::StreamEventsParams {
-            name: cli.event.clone(),
-            params: None,
+            name: chosen.name.clone(),
+            params: chosen.arguments.clone(),
             cursor: cursor.clone(),
             max_age_ms: None,
         };
@@ -379,6 +474,21 @@ async fn handle_event(
     http: &reqwest::Client,
 ) -> Result<String> {
     let data = &event.data;
+    // Route by payload shape: continuous-query diffs carry changeType;
+    // injected occurrences (incidents) do not.
+    if data.get("changeType").is_none() {
+        log(format!(
+            "EVENT {} {} on {} — {} — waking agent",
+            event.name,
+            data.get("priority").and_then(Value::as_str).unwrap_or("?"),
+            data.get("service").and_then(Value::as_str).unwrap_or("?"),
+            data.get("title").and_then(Value::as_str).unwrap_or("(untitled)"),
+        ));
+        return match (mode, llm) {
+            ("llm", Some(cfg)) => triage_incident_llm(event, cfg, http).await,
+            _ => Ok(triage_incident_policy(event)),
+        };
+    }
     let row = data.get("after").or_else(|| data.get("before")).cloned().unwrap_or(Value::Null);
     log(format!(
         "EVENT {} order {} ({}, ${}) — waking agent",
@@ -391,9 +501,44 @@ async fn handle_event(
         ("llm", Some(cfg)) => match cfg.provider {
             Provider::Anthropic => anthropic_brain(event, cfg, mcp, tool_defs, http).await,
             Provider::OpenAi => openai_brain(event, cfg, mcp, tool_defs, http).await,
+            Provider::OpenAiResponses => responses_brain(event, cfg, mcp, tool_defs, http).await,
         },
         _ => policy_brain(event, mcp).await,
     }
+}
+
+const INCIDENT_PROMPT: &str = "You are an on-call triage agent woken by an incident event. \
+Decide the immediate action — escalate/page for P1, notify the on-call channel for P2, log \
+for later review for P3/P4 — adjusting for the incident's details. Reply with one sentence \
+stating the action you are taking and why.";
+
+fn triage_incident_policy(event: &wire::EventOccurrence) -> String {
+    let data = &event.data;
+    let priority = data.get("priority").and_then(Value::as_str).unwrap_or("?");
+    let service = data.get("service").and_then(Value::as_str).unwrap_or("unknown-service");
+    let title = data.get("title").and_then(Value::as_str).unwrap_or("(untitled)");
+    match priority {
+        "P1" => format!("ESCALATING — paging on-call for {service}: {title} (P1)."),
+        "P2" => format!("Notifying the on-call channel about {service}: {title} (P2)."),
+        _ => format!("Logged {service}: {title} ({priority}) for review in the morning triage."),
+    }
+}
+
+async fn triage_incident_llm(
+    event: &wire::EventOccurrence,
+    cfg: &LlmConfig,
+    http: &reqwest::Client,
+) -> Result<String> {
+    chat_once(
+        cfg,
+        http,
+        INCIDENT_PROMPT,
+        format!(
+            "Incident event:\n{}",
+            serde_json::to_string_pretty(&serde_json::to_value(event)?)?
+        ),
+    )
+    .await
 }
 
 /// Narrow interface over the rmcp client so brains are testable.
@@ -608,6 +753,301 @@ async fn anthropic_brain(
     Ok("(stopped: exceeded max tool-use turns)".to_owned())
 }
 
+// ---------------------------------------------------------------------------
+// Subscription choice: task + catalog -> (event name, arguments, rationale)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+struct Chosen {
+    name: String,
+    arguments: Option<Value>,
+    rationale: String,
+}
+
+const CHOOSER_PROMPT: &str = "You are configuring an event-driven agent. Given a task and a \
+catalog of subscribable event streams (from MCP events/list), choose the single stream most \
+relevant to the task, plus subscription arguments if the stream's inputSchema offers a filter \
+that matches the task (e.g. a specific priority). Respond with ONLY a JSON object:\n\
+{\"eventName\": \"<name from the catalog>\", \"arguments\": {<object or null>}, \
+\"rationale\": \"<one sentence>\"}";
+
+/// One chat completion with no tools, in whichever dialect is configured.
+/// Returns the assistant's text.
+async fn chat_once(
+    cfg: &LlmConfig,
+    http: &reqwest::Client,
+    system: &str,
+    user: String,
+) -> Result<String> {
+    let (body, extract): (Value, fn(&Value) -> String) = match cfg.provider {
+        Provider::OpenAiResponses => (
+            json!({
+                "model": cfg.model,
+                "instructions": system,
+                "input": user,
+            }),
+            responses_output_text,
+        ),
+        Provider::Anthropic => (
+            json!({
+                "model": cfg.model,
+                "max_tokens": 2048,
+                "system": system,
+                "messages": [{"role": "user", "content": user}],
+            }),
+            |v: &Value| {
+                v["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|b| (b["type"] == "text").then(|| b["text"].as_str().unwrap_or("")))
+                    .collect::<Vec<_>>()
+                    .join("")
+            },
+        ),
+        Provider::OpenAi => (
+            json!({
+                "model": cfg.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            }),
+            |v: &Value| {
+                v["choices"][0]["message"]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned()
+            },
+        ),
+    };
+    let resp = http
+        .post(&cfg.chat_url)
+        .header("x-api-key", &cfg.api_key)
+        .header("api-key", &cfg.api_key)
+        .header("authorization", format!("Bearer {}", cfg.api_key))
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("llm api {status}: {text}");
+    }
+    Ok(extract(&serde_json::from_str(&text)?))
+}
+
+/// Extracts the first JSON object from model output (tolerates code fences
+/// and prose around it).
+fn first_json_object(text: &str) -> Option<Value> {
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    for (i, ch) in text[start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return serde_json::from_str(&text[start..start + i + 1]).ok();
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+async fn llm_choose(
+    cfg: &LlmConfig,
+    http: &reqwest::Client,
+    task: &str,
+    catalog: &[wire::EventDefinition],
+) -> Result<Chosen> {
+    let user = format!(
+        "TASK:\n{task}\n\nEVENT CATALOG (events/list):\n{}",
+        serde_json::to_string_pretty(&serde_json::to_value(catalog)?)?
+    );
+    let reply = chat_once(cfg, http, CHOOSER_PROMPT, user).await?;
+    let parsed = first_json_object(&reply)
+        .ok_or_else(|| anyhow::anyhow!("model reply had no JSON object: {reply:?}"))?;
+    let name = parsed["eventName"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing eventName in {parsed}"))?
+        .to_owned();
+    anyhow::ensure!(
+        catalog.iter().any(|d| d.name == name),
+        "model chose {name:?}, which is not in the catalog"
+    );
+    let arguments = match &parsed["arguments"] {
+        Value::Null => None,
+        v @ Value::Object(map) => (!map.is_empty()).then(|| v.clone()),
+        other => anyhow::bail!("arguments must be an object or null, got {other}"),
+    };
+    Ok(Chosen {
+        name,
+        arguments,
+        rationale: parsed["rationale"].as_str().unwrap_or("(none given)").to_owned(),
+    })
+}
+
+/// Deterministic fallback chooser: keyword overlap between the task and each
+/// catalog entry's name+description; arguments from enum values of the chosen
+/// type's inputSchema that appear verbatim in the task (e.g. "P1").
+fn policy_choose(task: &str, catalog: &[wire::EventDefinition]) -> Chosen {
+    fn words(s: &str) -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 2)
+            .map(str::to_owned)
+            .collect()
+    }
+    let task_words = words(task);
+    let (best, score) = catalog
+        .iter()
+        .map(|d| {
+            let hay = words(&format!("{} {}", d.name, d.description.as_deref().unwrap_or("")));
+            let score = task_words.iter().filter(|w| hay.contains(w)).count();
+            (d, score)
+        })
+        .max_by_key(|(_, s)| *s)
+        .expect("catalog is non-empty");
+    let mut arguments = serde_json::Map::new();
+    if let Some(props) = best
+        .input_schema
+        .as_ref()
+        .and_then(|s| s.get("properties"))
+        .and_then(Value::as_object)
+    {
+        let task_upper = task.to_uppercase();
+        for (key, prop) in props {
+            if let Some(options) = prop.get("enum").and_then(Value::as_array) {
+                if let Some(hit) = options.iter().find(|v| {
+                    v.as_str()
+                        .is_some_and(|s| task_upper.contains(&s.to_uppercase()))
+                }) {
+                    arguments.insert(key.clone(), hit.clone());
+                }
+            }
+        }
+    }
+    Chosen {
+        name: best.name.clone(),
+        arguments: (!arguments.is_empty()).then(|| Value::Object(arguments)),
+        rationale: format!(
+            "keyword match ({score} overlapping term{}) between the task and this stream's description",
+            if score == 1 { "" } else { "s" }
+        ),
+    }
+}
+
+/// Concatenated `output_text` content of a Responses API result.
+fn responses_output_text(v: &Value) -> String {
+    v["output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| item["type"] == "message")
+        .flat_map(|item| item["content"].as_array().into_iter().flatten())
+        .filter_map(|c| (c["type"] == "output_text").then(|| c["text"].as_str().unwrap_or("")))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// Responses API function tools are FLAT (no nested "function" object).
+fn responses_tool_defs(tool_defs: &[Value]) -> Vec<Value> {
+    tool_defs
+        .iter()
+        .map(|d| {
+            json!({
+                "type": "function",
+                "name": d["name"],
+                "description": d["description"],
+                "parameters": d["input_schema"],
+            })
+        })
+        .collect()
+}
+
+/// Tool-use loop over the OpenAI Responses API dialect. History is carried
+/// server-side via `previous_response_id`; each turn we send only the
+/// function_call_output items for the calls the previous turn requested.
+async fn responses_brain(
+    event: &wire::EventOccurrence,
+    cfg: &LlmConfig,
+    mcp: &impl ToolCaller,
+    tool_defs: &[Value],
+    http: &reqwest::Client,
+) -> Result<String> {
+    let tools = responses_tool_defs(tool_defs);
+    let mut input = json!(format!(
+        "A watched-query change event just arrived:\n{}",
+        serde_json::to_string_pretty(&serde_json::to_value(event)?)?
+    ));
+    let mut previous_id: Option<String> = None;
+    for _ in 0..MAX_BRAIN_TURNS {
+        let mut body = json!({
+            "model": cfg.model,
+            "instructions": SYSTEM_PROMPT,
+            "input": input,
+            "tools": tools,
+        });
+        if let Some(id) = &previous_id {
+            body["previous_response_id"] = json!(id);
+        }
+        let resp = http
+            .post(&cfg.chat_url)
+            .header("api-key", &cfg.api_key)
+            .header("authorization", format!("Bearer {}", cfg.api_key))
+            .json(&body)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            anyhow::bail!("llm api {status}: {text}");
+        }
+        let response: Value = serde_json::from_str(&text)?;
+        if response["status"] != "completed" {
+            anyhow::bail!(
+                "unexpected response status {:?} ({})",
+                response["status"],
+                response["incomplete_details"]["reason"].as_str().unwrap_or("no detail")
+            );
+        }
+        let calls: Vec<Value> = response["output"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|item| item["type"] == "function_call")
+            .cloned()
+            .collect();
+        if calls.is_empty() {
+            return Ok(responses_output_text(&response));
+        }
+        previous_id = response["id"].as_str().map(str::to_owned);
+        let mut outputs = Vec::new();
+        for call in &calls {
+            let name = call["name"].as_str().unwrap_or("");
+            let args: Value = call["arguments"]
+                .as_str()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_else(|| json!({}));
+            let payload = mcp
+                .call(name, args)
+                .await
+                .unwrap_or_else(|e| json!({"error": e.to_string()}));
+            outputs.push(json!({
+                "type": "function_call_output",
+                "call_id": call["call_id"],
+                "output": payload.to_string(),
+            }));
+        }
+        input = Value::Array(outputs);
+    }
+    Ok("(stopped: exceeded max tool-use turns)".to_owned())
+}
+
 /// Converts Anthropic-shaped tool defs ({name, description, input_schema})
 /// to OpenAI chat-completions function tools.
 fn openai_tool_defs(tool_defs: &[Value]) -> Vec<Value> {
@@ -766,6 +1206,55 @@ mod tests {
             !tools.calls.lock().unwrap().iter().any(|c| c == "flag_order"),
             "routine order was flagged"
         );
+    }
+
+    fn catalog() -> Vec<wire::EventDefinition> {
+        serde_json::from_value(json!([
+            {
+                "name": "high-value-orders.changed",
+                "description": "Fires when an order enters, changes within, or leaves the set of high-value orders (total > $1,000). Subscribe to monitor significant order and payment activity, e.g. for fraud or review workflows.",
+                "delivery": ["poll", "push"]
+            },
+            {
+                "name": "stuck-orders.changed",
+                "description": "Fires when an order has remained in status 'open' too long without being processed. Subscribe to catch orders falling through the cracks in fulfillment or operations workflows.",
+                "delivery": ["poll", "push"]
+            },
+            {
+                "name": "incidents.created",
+                "description": "Fires when an operational incident is reported. Subscribe to monitor production incidents that may need triage, escalation, or on-call attention.",
+                "delivery": ["poll", "push"],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"priority": {"enum": ["P1", "P2", "P3", "P4"]}}
+                }
+            }
+        ]))
+        .expect("catalog fixture")
+    }
+
+    #[test]
+    fn policy_chooser_matches_task_to_stream_and_extracts_enum_args() {
+        let c = policy_choose("You are on-call: watch for P1 incidents and escalate them", &catalog());
+        assert_eq!(c.name, "incidents.created");
+        assert_eq!(c.arguments, Some(json!({"priority": "P1"})));
+
+        let c = policy_choose("Monitor high value payment activity for possible fraud", &catalog());
+        assert_eq!(c.name, "high-value-orders.changed");
+        assert_eq!(c.arguments, None);
+
+        let c = policy_choose("Watch fulfillment for orders stuck without processing", &catalog());
+        assert_eq!(c.name, "stuck-orders.changed");
+    }
+
+    #[test]
+    fn first_json_object_tolerates_fences_and_prose() {
+        let text = "Sure! Here is my choice:\n```json\n{\"eventName\": \"incidents.created\", \
+                    \"arguments\": {\"priority\": \"P1\"}, \"rationale\": \"on-call task\"}\n``` hope that helps";
+        let v = first_json_object(text).expect("parsed");
+        assert_eq!(v["eventName"], "incidents.created");
+        assert_eq!(v["arguments"]["priority"], "P1");
+        assert!(first_json_object("no json here").is_none());
     }
 
     #[test]
