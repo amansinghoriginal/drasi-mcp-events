@@ -128,8 +128,12 @@ docker exec drasi-demo-postgres psql -U demo -d demo -c "TRUNCATE order_flags RE
 rm -f /tmp/drasi-agent-cursor.json
 ```
 
-Full environment reset: `cd drasi && docker compose down -v && docker compose up -d`
-(plugin volume survives; re-run `plugin-install` only after `down -v`).
+Full environment reset (`down -v` deletes the plugin volume, so the install step must run
+again before `up`):
+
+```bash
+cd drasi && docker compose down -v && docker compose run --rm plugin-install && docker compose up -d
+```
 
 ## Notes
 

@@ -109,7 +109,12 @@ fn principal_from_headers(config: &ServerConfig, headers: &HeaderMap) -> Option<
     principal
 }
 
-const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+/// Matches rmcp's default `max_request_body_bytes` (4 MiB) so fronting it
+/// with this buffering layer does not silently tighten the transport limit.
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// SEP-2243 / 2026-07-28 `HeaderMismatchError` (-32020), mapped to HTTP 400.
+const HEADER_MISMATCH: i64 = -32020;
 
 async fn handle_hybrid(
     State(state): State<HybridState>,
@@ -124,7 +129,18 @@ async fn handle_hybrid(
     let (parts, body) = req.into_parts();
     let bytes: Bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
-        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(JsonRpcResponse::failure(
+                    None,
+                    JsonRpcError::invalid_request(format!(
+                        "request body exceeds {MAX_BODY_BYTES} bytes or could not be read"
+                    )),
+                )),
+            )
+                .into_response();
+        }
     };
 
     // Sniff the JSON-RPC method: prefer the SEP-2243 `Mcp-Method` header
@@ -142,7 +158,12 @@ async fn handle_hybrid(
 
     match method.as_deref() {
         Some(m) if m.starts_with("events/") => {
-            handle_events_rpc(&state.app, &parts.headers, &bytes).await
+            let header_method = parts
+                .headers
+                .get("mcp-method")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            handle_events_rpc(&state.app, &parts.headers, header_method, &bytes).await
         }
         _ => {
             // Replay the buffered body into the official SDK untouched — rmcp
@@ -154,7 +175,12 @@ async fn handle_hybrid(
     }
 }
 
-async fn handle_events_rpc(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes) -> Response {
+async fn handle_events_rpc(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    header_method: Option<String>,
+    body: &Bytes,
+) -> Response {
     let principal = principal_from_headers(&state.config, headers);
 
     let value: Value = match serde_json::from_slice(body) {
@@ -190,6 +216,28 @@ async fn handle_events_rpc(state: &Arc<AppState>, headers: &HeaderMap, body: &By
         tracing::debug!(method = %req.method, "client notification accepted");
         return StatusCode::ACCEPTED.into_response();
     };
+
+    // SEP-2243: when the Mcp-Method header is present it MUST match the body
+    // method — routing trusted the header, so enforce the pairing here.
+    if let Some(header) = header_method {
+        if header != req.method {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(JsonRpcResponse::failure(
+                    Some(id),
+                    JsonRpcError {
+                        code: HEADER_MISMATCH,
+                        message: format!(
+                            "Mcp-Method header {header:?} does not match body method {:?}",
+                            req.method
+                        ),
+                        data: None,
+                    },
+                )),
+            )
+                .into_response();
+        }
+    }
 
     tracing::debug!(method = %req.method, %id, "dispatching events request");
     match req.method.as_str() {

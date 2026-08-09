@@ -37,6 +37,11 @@ use rmcp::transport::StreamableHttpClientTransport;
 use serde_json::{json, Map, Value};
 
 const MAX_BRAIN_TURNS: usize = 8;
+/// Stream considered dead after this long without any frame (sketch: twice the
+/// heartbeat interval; the server's SHOULD is <= 30 s, so 60 s).
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A poison event is skipped (with a loud log) after this many failed attempts.
+const MAX_EVENT_ATTEMPTS: u32 = 3;
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -160,6 +165,8 @@ async fn main() -> Result<()> {
         log(format!("resuming from persisted cursor {cursor:?}"));
     }
     let mut backoff = Duration::from_secs(1);
+    // (event_id, attempt count) for the event currently failing, if any.
+    let mut failures: Option<(String, u32)> = None;
     log(format!("subscribing to {} via events/stream …", cli.event));
 
     loop {
@@ -178,7 +185,22 @@ async fn main() -> Result<()> {
                 continue;
             }
         };
-        while let Some(frame) = stream.next().await {
+        loop {
+            // Heartbeat watchdog: the stream deliberately has no request
+            // timeout, so heartbeats are the only liveness signal. The sketch
+            // says a client seeing neither an event nor a heartbeat for twice
+            // the heartbeat interval should treat the stream as dead.
+            let frame = match tokio::time::timeout(IDLE_TIMEOUT, stream.next()).await {
+                Err(_) => {
+                    log(format!(
+                        "no frames for {IDLE_TIMEOUT:?} — treating stream as dead; \
+                         reconnecting with cursor {cursor:?}"
+                    ));
+                    break;
+                }
+                Ok(None) => break,
+                Ok(Some(frame)) => frame,
+            };
             match frame {
                 Ok(StreamFrame::Active(active)) => {
                     backoff = Duration::from_secs(1);
@@ -192,12 +214,46 @@ async fn main() -> Result<()> {
                 }
                 Ok(StreamFrame::Event(event)) => {
                     let new_cursor = event.cursor.clone().flatten();
-                    let verdict = handle_event(&event, mode, &cli.model, &mcp, &tool_defs, &http)
-                        .await
-                        .unwrap_or_else(|e| format!("(agent error: {e:#})"));
-                    log2(format!("agent: {verdict}"));
-                    log("agent idle — waiting for next event");
-                    persist(&cli.state_file, &mut cursor, new_cursor);
+                    match handle_event(&event, mode, &cli.model, &mcp, &tool_defs, &http).await {
+                        Ok(verdict) => {
+                            log2(format!("agent: {verdict}"));
+                            log("agent idle — waiting for next event");
+                            failures = None;
+                            persist(&cli.state_file, &mut cursor, new_cursor);
+                        }
+                        Err(error) => {
+                            // At-least-once: do NOT persist the cursor — break so
+                            // the reconnect replays this event — unless the same
+                            // event has now failed MAX_EVENT_ATTEMPTS times
+                            // (poison event: skip it loudly instead of looping).
+                            let attempts = match &mut failures {
+                                Some((id, n)) if *id == event.event_id => {
+                                    *n += 1;
+                                    *n
+                                }
+                                _ => {
+                                    failures = Some((event.event_id.clone(), 1));
+                                    1
+                                }
+                            };
+                            if attempts >= MAX_EVENT_ATTEMPTS {
+                                log(format!(
+                                    "agent error handling event {} ({error:#}); giving up \
+                                     after {attempts} attempts and SKIPPING it — review manually",
+                                    event.event_id
+                                ));
+                                failures = None;
+                                persist(&cli.state_file, &mut cursor, new_cursor);
+                            } else {
+                                log(format!(
+                                    "agent error handling event {} ({error:#}); reconnecting \
+                                     to retry (attempt {attempts}/{MAX_EVENT_ATTEMPTS})",
+                                    event.event_id
+                                ));
+                                break;
+                            }
+                        }
+                    }
                 }
                 Ok(StreamFrame::Heartbeat(hb)) => {
                     persist(&cli.state_file, &mut cursor, hb.cursor);
@@ -281,12 +337,20 @@ where
             serde_json::from_str(&text).unwrap_or(Value::String(text))
         };
         let shown = payload.to_string();
-        log2(format!(
-            "  ← {}",
-            if shown.len() > 200 { &shown[..200] } else { &shown }
-        ));
+        log2(format!("  ← {}", truncate_at_char_boundary(&shown, 200)));
         Ok(payload)
     }
+}
+
+/// Byte-bounded truncation that never slices inside a multi-byte character
+/// (a plain `&s[..max]` panics when `max` lands mid-character — and tool
+/// payloads contain non-ASCII like `×` and `—`).
+fn truncate_at_char_boundary(s: &str, max: usize) -> &str {
+    let mut end = s.len().min(max);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 fn text_of(content: &[rmcp::model::ContentBlock]) -> String {

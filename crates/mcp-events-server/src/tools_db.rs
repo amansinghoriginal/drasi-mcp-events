@@ -30,13 +30,25 @@ impl ToolsDb {
     }
 
     async fn client(&self) -> anyhow::Result<Arc<Client>> {
-        let mut guard = self.client.lock().await;
-        if let Some(client) = guard.as_ref() {
-            if !client.is_closed() {
-                return Ok(client.clone());
+        // Fast path — and crucially, the lock is NOT held across the dial:
+        // a hung dial must not serialize every other tool call behind it.
+        {
+            let guard = self.client.lock().await;
+            if let Some(client) = guard.as_ref() {
+                if !client.is_closed() {
+                    return Ok(client.clone());
+                }
             }
         }
-        let (client, connection) = tokio_postgres::connect(&self.conn_str, NoTls)
+        let mut config: tokio_postgres::Config = self
+            .conn_str
+            .parse()
+            .with_context(|| format!("parsing connection string {}", self.conn_str))?;
+        if config.get_connect_timeout().is_none() {
+            config.connect_timeout(std::time::Duration::from_secs(5));
+        }
+        let (client, connection) = config
+            .connect(NoTls)
             .await
             .with_context(|| format!("connecting to {}", self.conn_str))?;
         tokio::spawn(async move {
@@ -45,6 +57,14 @@ impl ToolsDb {
             }
         });
         let client = Arc::new(client);
+        let mut guard = self.client.lock().await;
+        // A concurrent caller may have installed a live client while we
+        // dialed; prefer the existing one and drop ours.
+        if let Some(existing) = guard.as_ref() {
+            if !existing.is_closed() {
+                return Ok(existing.clone());
+            }
+        }
         *guard = Some(client.clone());
         Ok(client)
     }
