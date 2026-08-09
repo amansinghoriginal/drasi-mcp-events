@@ -12,9 +12,18 @@ feed:
   # SSE reaction endpoint from drasi/server.yaml (port 8081, ssePath /events).
   url: http://localhost:8081/events
 queries:
-  # Must match the continuous query id in drasi/server.yaml.
+  # Ids must match the continuous query ids in drasi/server.yaml. Descriptions
+  # are the LLM-facing catalog: agents choose what to subscribe to by reading
+  # them, so they explain when the event fires and what to do with it.
   - id: high-value-orders
-    description: "Rows entering/leaving/changing in the high-value-orders continuous query (orders with total > 1000)"
+    description: >-
+      Fires when an order enters, changes within, or leaves the set of
+      high-value orders (total > $1,000). Payloads carry {changeType:
+      added|updated|deleted, before, after} with the full order row: 'added'
+      means an order just became high-value, 'updated' means a high-value
+      order changed, 'deleted' means it stopped being high-value (e.g. the
+      total was reduced). Subscribe to this to monitor significant order and
+      payment activity, e.g. for fraud or review workflows.
     payloadSchema:
       type: object
       properties:
@@ -22,6 +31,48 @@ queries:
         customer: { type: string }
         total: { type: number }
         status: { type: string }
+  - id: stuck-orders
+    description: >-
+      Fires when an order has remained in status 'open' for more than 45
+      seconds without being processed — a temporal condition: the 'added'
+      event fires because time passed, with no database write triggering it.
+      'added' means an order is now stuck and may need intervention;
+      'deleted' means it became unstuck (its status finally changed).
+      Subscribe to this to catch orders falling through the cracks in
+      fulfillment or operations workflows.
+    payloadSchema:
+      type: object
+      properties:
+        id: { type: integer }
+        customer: { type: string }
+        total: { type: number }
+        status: { type: string }
+
+# On-demand demo stream, not database-backed: occurrences are fired by
+# scripts/fire-incident.sh via POST /inject.
+injected:
+  - name: incidents.created
+    description: >-
+      Fires when an operational incident is reported. Payload: {priority:
+      "P1".."P4", service, title}. Subscribe with arguments like
+      {"priority": "P1"} to receive only incidents of that priority, or with
+      no arguments to receive all of them. Subscribe to this to monitor
+      production incidents that may need triage, escalation, or on-call
+      attention.
+    inputSchema:
+      type: object
+      properties:
+        priority:
+          type: string
+          enum: [P1, P2, P3, P4]
+          description: Only deliver incidents of this priority
+    payloadSchema:
+      type: object
+      properties:
+        priority: { type: string, enum: [P1, P2, P3, P4] }
+        service: { type: string }
+        title: { type: string }
+      required: [priority, title]
 push: { heartbeatIntervalMs: 15000 }
 poll: { nextPollMs: 2000 }
 webhook:

@@ -70,6 +70,15 @@ fn test_config() -> ServerConfig {
             ..WebhookSettings::default()
         },
         tools: Default::default(),
+        injected: vec![config::InjectedEventType {
+            name: "test-incidents.created".into(),
+            description: "injected test stream".into(),
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": { "priority": { "enum": ["P1", "P2"] } }
+            })),
+            payload_schema: None,
+        }],
     }
 }
 
@@ -221,10 +230,11 @@ async fn discover_list_poll_flow() {
         "serverInfo lives in _meta on 2026-07-28"
     );
 
-    // --- events/list ---
+    // --- events/list: the query-backed type plus the injected test type ---
     let body = rpc(&client, &url, 3, "events/list", json!({})).await;
     let events = body["result"]["events"].as_array().expect("definitions");
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1]["name"], "test-incidents.created");
     assert_eq!(events[0]["name"], EVENT);
     let delivery = events[0]["delivery"].as_array().expect("delivery");
     assert!(delivery.contains(&json!("poll")));
@@ -540,7 +550,8 @@ async fn per_change_modeling_three_event_types_end_to_end() {
         vec![
             "high-value-orders.added",
             "high-value-orders.updated",
-            "high-value-orders.deleted"
+            "high-value-orders.deleted",
+            "test-incidents.created"
         ]
     );
 
@@ -596,4 +607,50 @@ fn example_configs_parse() {
     assert_eq!(drasi.queries[0].id, "high-value-orders");
     assert!(drasi.webhook.enabled);
     assert!(!drasi.webhook.allow_insecure_urls);
+}
+
+#[tokio::test]
+async fn inject_endpoint_feeds_filtered_subscriptions() {
+    let (url, _state) = spawn_server(test_config()).await;
+    let base = url.trim_end_matches("/mcp").to_owned();
+    let client = reqwest::Client::new();
+
+    // Unknown event type => 404.
+    let resp = client
+        .post(format!("{base}/inject"))
+        .json(&json!({"name": "nope.created", "data": {}}))
+        .send()
+        .await
+        .expect("inject send");
+    assert_eq!(resp.status(), 404);
+
+    // Bootstrap a cursor for the filtered subscription, then fire P2 + P1.
+    let body = rpc(
+        &client, &url, 50, "events/poll",
+        json!({"name": "test-incidents.created", "params": {"priority": "P1"}, "cursor": null}),
+    )
+    .await;
+    let cursor = body["result"]["cursor"].as_str().expect("cursor").to_owned();
+
+    for (prio, title) in [("P2", "noise"), ("P1", "page-worthy")] {
+        let resp = client
+            .post(format!("{base}/inject"))
+            .json(&json!({"name": "test-incidents.created",
+                          "data": {"priority": prio, "title": title}}))
+            .send()
+            .await
+            .expect("inject send");
+        assert_eq!(resp.status(), 200, "inject {prio}");
+    }
+
+    // Filtered poll sees ONLY the P1 occurrence.
+    let body = rpc(
+        &client, &url, 51, "events/poll",
+        json!({"name": "test-incidents.created", "params": {"priority": "P1"}, "cursor": cursor}),
+    )
+    .await;
+    let events = body["result"]["events"].as_array().expect("events");
+    assert_eq!(events.len(), 1, "P2 must be filtered out: {events:?}");
+    assert_eq!(events[0]["data"]["priority"], "P1");
+    assert_eq!(events[0]["data"]["title"], "page-worthy");
 }

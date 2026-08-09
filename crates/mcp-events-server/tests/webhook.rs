@@ -93,6 +93,7 @@ fn test_config(webhook: WebhookSettings) -> ServerConfig {
         poll: PollSettings { next_poll_ms: 50 },
         webhook,
         tools: Default::default(),
+        injected: vec![],
     }
 }
 

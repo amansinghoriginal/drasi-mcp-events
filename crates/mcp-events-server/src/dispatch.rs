@@ -63,7 +63,44 @@ pub fn router(app: Arc<AppState>, mcp: Arc<McpCoreService>) -> Router {
     Router::new()
         .route("/mcp", any(handle_hybrid))
         .route("/healthz", get(healthz))
+        .route("/inject", axum::routing::post(handle_inject))
         .with_state(HybridState { app, mcp })
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InjectRequest {
+    name: String,
+    data: Value,
+    #[serde(default)]
+    event_id: Option<String>,
+}
+
+/// Demo-only occurrence injection for `injected:` event types (see
+/// scripts/fire-incident.sh). Not part of the MCP surface — a plain HTTP
+/// endpoint feeding the same buffer the feeds use.
+async fn handle_inject(
+    State(state): State<HybridState>,
+    Json(req): Json<InjectRequest>,
+) -> Response {
+    if !state.app.injected_names.contains(&req.name) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("{:?} is not an injected event type", req.name)})),
+        )
+            .into_response();
+    }
+    let event_id = req
+        .event_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let seq = state.app.buffer.emit(mcp_events_engine::EmittedEvent {
+        name: req.name.clone(),
+        event_id: event_id.clone(),
+        timestamp: chrono::Utc::now(),
+        data: req.data,
+    });
+    tracing::info!(name = %req.name, %event_id, seq, "injected occurrence");
+    Json(json!({"eventId": event_id, "seq": seq})).into_response()
 }
 
 async fn healthz() -> &'static str {

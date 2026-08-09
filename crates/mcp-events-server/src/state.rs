@@ -1,7 +1,7 @@
 //! Shared application state (pinned by ARCHITECTURE.md; used by both the
 //! server-core and webhook components).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +19,8 @@ pub struct AppState {
     pub subs: SubscriptionStore,
     /// Per event name (`Arc<dyn Fn>`).
     pub filters: HashMap<String, Arc<ParamFilter>>,
+    /// Event types accepting occurrences via `POST /inject`.
+    pub injected_names: HashSet<String>,
     /// Outbound client: redirects disabled (webhook SSRF hardening),
     /// connect timeout 5s, request timeout 10s.
     #[allow(dead_code)]
@@ -38,6 +40,8 @@ impl AppState {
             max_events_per_type: config.buffer.max_events_per_type,
             max_age,
         });
+        let injected_names: HashSet<String> =
+            config.injected.iter().map(|i| i.name.clone()).collect();
         let subs = SubscriptionStore::new(config.webhook.max_subscriptions_per_principal);
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -51,6 +55,7 @@ impl AppState {
             buffer,
             subs,
             filters,
+            injected_names,
             http,
         }))
     }

@@ -31,6 +31,25 @@ pub struct ServerConfig {
     pub webhook: WebhookSettings,
     #[serde(default)]
     pub tools: ToolsSettings,
+    /// Event types fed by the demo `/inject` HTTP endpoint instead of a feed —
+    /// occurrences are fired on demand (e.g. by scripts/fire-incident.sh).
+    #[serde(default)]
+    pub injected: Vec<InjectedEventType>,
+}
+
+/// An event type whose occurrences arrive via `POST /inject` rather than a
+/// feed. Subscription params matching a property declared in `inputSchema`
+/// are enforced as equality filters against the occurrence's `data` (e.g.
+/// subscribing with `{"priority": "P1"}` delivers only P1 occurrences).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InjectedEventType {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub input_schema: Option<Value>,
+    #[serde(default)]
+    pub payload_schema: Option<Value>,
 }
 
 /// Postgres connection for the rmcp demo tools (get_order,

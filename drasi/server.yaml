@@ -73,10 +73,26 @@ queries:
     autoStart: true          # query autoStart defaults to false; must be explicit
     enableBootstrap: true    # seed rows with total > 1000 enter the result set on startup
 
+  # Temporal query: an order enters this result set only after its status has
+  # been 'open' CONTINUOUSLY for 45 seconds (drasi.trueFor future function).
+  # The resulting `added` event fires with NO triggering database write —
+  # Drasi notices time passing. 45s is demo tempo; production would use minutes.
+  - id: stuck-orders
+    queryLanguage: Cypher
+    query: |
+      MATCH (o:orders)
+      WHERE o.status = 'open'
+        AND drasi.trueFor(o.status = 'open', duration({ seconds: 45 }))
+      RETURN o.id AS id, o.customer AS customer, o.total AS total, o.status AS status
+    sources:
+      - sourceId: orders-db
+    autoStart: true
+    enableBootstrap: true
+
 reactions:
   - kind: sse
     id: orders-sse
-    queries: [high-value-orders]
+    queries: [high-value-orders, stuck-orders]
     autoStart: true
     host: 0.0.0.0
     port: 8081

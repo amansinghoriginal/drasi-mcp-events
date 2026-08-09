@@ -129,6 +129,35 @@ pub fn build_event_model(
             }
         }
     }
+    for injected in &config.injected {
+        defs.push(EventDefinition {
+            name: injected.name.clone(),
+            description: Some(injected.description.clone()),
+            delivery: delivery.clone(),
+            input_schema: injected.input_schema.clone(),
+            payload_schema: injected.payload_schema.clone(),
+            meta: None,
+        });
+        // Generic equality filter: every subscription param whose key appears
+        // in the declared inputSchema.properties must equal the occurrence's
+        // corresponding data field. Params with unknown keys are ignored.
+        let known_keys: Vec<String> = injected
+            .input_schema
+            .as_ref()
+            .and_then(|s| s.get("properties"))
+            .and_then(Value::as_object)
+            .map(|props| props.keys().cloned().collect())
+            .unwrap_or_default();
+        filters.insert(
+            injected.name.clone(),
+            Arc::new(move |params: &Value, data: &Value| {
+                let Some(obj) = params.as_object() else { return true };
+                obj.iter()
+                    .filter(|(k, v)| known_keys.contains(k) && !v.is_null())
+                    .all(|(k, want)| data.get(k) == Some(want))
+            }),
+        );
+    }
     (defs, filters)
 }
 
@@ -272,8 +301,8 @@ pub fn spawn_feed_pipeline(state: Arc<AppState>) -> tokio::task::JoinHandle<()> 
 mod tests {
     use super::*;
     use crate::config::{
-        BufferSettings, FeedSettings, PollSettings, PushSettings, QueryConfig, ToolsSettings,
-        WebhookSettings,
+        BufferSettings, FeedSettings, InjectedEventType, PollSettings, PushSettings, QueryConfig,
+        ToolsSettings, WebhookSettings,
     };
 
     fn config(mode: EventModeling, webhook_enabled: bool) -> ServerConfig {
@@ -282,6 +311,7 @@ mod tests {
             port: 0,
             auth_tokens: vec![],
             tools: ToolsSettings::default(),
+            injected: vec![],
             event_modeling: mode,
             buffer: BufferSettings::default(),
             feed: FeedSettings {
@@ -313,6 +343,32 @@ mod tests {
             timestamp: Some(Utc::now()),
             upstream_id: Some("row-1-rev-0".into()),
         }
+    }
+
+    #[test]
+    fn injected_type_gets_generic_equality_filter() {
+        let mut cfg = config(EventModeling::Single, false);
+        cfg.injected = vec![InjectedEventType {
+            name: "incidents.created".into(),
+            description: "test incidents".into(),
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": { "priority": { "enum": ["P1", "P2", "P3", "P4"] } }
+            })),
+            payload_schema: None,
+        }];
+        let (defs, filters) = build_event_model(&cfg);
+        assert!(defs.iter().any(|d| d.name == "incidents.created"));
+        let f = filters.get("incidents.created").expect("filter registered");
+        let p1 = json!({"priority": "P1", "service": "x", "title": "t"});
+        let p3 = json!({"priority": "P3", "service": "x", "title": "t"});
+        // Param on a declared key filters by equality.
+        assert!(f(&json!({"priority": "P1"}), &p1));
+        assert!(!f(&json!({"priority": "P1"}), &p3));
+        // No params / null param / unknown key => everything passes.
+        assert!(f(&json!({}), &p3));
+        assert!(f(&json!({"priority": null}), &p3));
+        assert!(f(&json!({"unknown": "zzz"}), &p3));
     }
 
     #[test]
