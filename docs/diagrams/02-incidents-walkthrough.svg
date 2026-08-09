@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 728" font-family="-apple-system, 'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="mBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#2563eb"/>
+    </marker>
+    <marker id="mGray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="mSlate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#64748b"/>
+    </marker>
+    <marker id="mRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1080" height="728" fill="#ffffff"/>
+
+  <!-- title -->
+  <text x="40" y="34" font-size="16" font-weight="700" fill="#111827">Act 1 — the incidents run, mapped to your terminals</text>
+  <text x="40" y="52" font-size="11" fill="#9ca3af">the protocol loop again — now with the real labels you will see on screen</text>
+
+  <!-- lane headers -->
+  <rect x="105" y="66" width="170" height="46" rx="10" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5"/>
+  <text x="190" y="85" font-size="13.5" font-weight="700" fill="#1f2937" text-anchor="middle">AGENT</text>
+  <text x="190" y="102" font-size="10.5" fill="#9ca3af" text-anchor="middle">&#9399;&#160;Terminal B — drasi-agent</text>
+
+  <rect x="450" y="66" width="200" height="46" rx="10" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5"/>
+  <text x="550" y="85" font-size="13.5" font-weight="700" fill="#1f2937" text-anchor="middle">MCP SERVER</text>
+  <text x="550" y="102" font-size="10.5" fill="#9ca3af" text-anchor="middle">&#9398;&#160;Terminal A — mcp-events-server</text>
+
+  <rect x="795" y="66" width="170" height="46" rx="10" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5"/>
+  <text x="880" y="85" font-size="13.5" font-weight="700" fill="#1f2937" text-anchor="middle">YOU</text>
+  <text x="880" y="102" font-size="10.5" fill="#9ca3af" text-anchor="middle">&#9400;&#160;Terminal C — scripts / psql</text>
+
+  <!-- task chip -->
+  <rect x="45" y="122" width="290" height="28" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.25"/>
+  <text x="190" y="140" font-size="10.5" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#475569" text-anchor="middle">--task "on-call: watch for P1 incidents…"</text>
+
+  <!-- lifelines -->
+  <line x1="190" y1="156" x2="190" y2="664" stroke="#e5e7eb" stroke-width="2"/>
+  <line x1="550" y1="156" x2="550" y2="664" stroke="#e5e7eb" stroke-width="2"/>
+  <line x1="880" y1="156" x2="880" y2="664" stroke="#e5e7eb" stroke-width="2"/>
+
+  <g id="s1">
+    <!-- 1 events/list -->
+    <text x="370" y="181" font-size="12.5" font-weight="600" fill="#1f2937" text-anchor="middle">&#9312;&#160;&#160;events/list</text>
+    <line x1="200" y1="191" x2="538" y2="191" stroke="#2563eb" stroke-width="1.75" marker-end="url(#mBlue)"/>
+
+    <!-- 2 catalog -->
+    <text x="370" y="219" font-size="12.5" font-weight="600" fill="#475569" text-anchor="middle">&#9313;&#160;&#160;catalog — 3 streams</text>
+    <line x1="540" y1="229" x2="202" y2="229" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#mGray)"/>
+    <rect x="225" y="241" width="330" height="66" rx="8" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.25"/>
+    <text x="241" y="260" font-size="10.5" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#334155">high-value-orders.changed <tspan fill="#94a3b8">· orders over $1,000</tspan></text>
+    <text x="241" y="277" font-size="10.5" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#334155">stuck-orders.changed <tspan fill="#94a3b8">· open too long (temporal)</tspan></text>
+    <text x="241" y="294" font-size="10.5" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#334155">incidents.created <tspan fill="#94a3b8">· ops incidents, P1–P4 filter</tspan></text>
+
+    <!-- 3 choose -->
+    <rect x="40" y="321" width="300" height="62" rx="10" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+    <text x="190" y="341" font-size="12.5" font-weight="700" fill="#1d4ed8" text-anchor="middle">&#9314;&#160;&#160;chooses: incidents.created</text>
+    <text x="190" y="358" font-size="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#2563eb" text-anchor="middle">{"priority": "P1"}</text>
+    <text x="190" y="375" font-size="10.5" font-style="italic" fill="#3b82f6" text-anchor="middle">“…matches the on-call escalation task”</text>
+
+    <!-- 4 subscribe -->
+    <text x="370" y="411" font-size="12.5" font-weight="600" fill="#1f2937" text-anchor="middle">&#9315;&#160;&#160;subscribe&#160;&#160;<tspan font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11.5">incidents.created {"priority":"P1"}</tspan></text>
+    <line x1="200" y1="421" x2="538" y2="421" stroke="#2563eb" stroke-width="1.75" marker-end="url(#mBlue)"/>
+  </g>
+
+  <g id="s2">
+    <!-- 5 fire P2 -->
+    <text x="715" y="453" font-size="12" font-weight="600" fill="#475569" text-anchor="middle">&#9316;&#160;&#160;<tspan font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11">fire-incident.sh P2 “Bounce rate elevated”</tspan></text>
+    <line x1="870" y1="463" x2="562" y2="463" stroke="#64748b" stroke-width="1.75" marker-end="url(#mSlate)"/>
+
+    <!-- filter -->
+    <rect x="484" y="477" width="132" height="28" rx="8" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.25"/>
+    <text x="550" y="495" font-size="10.5" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#475569" text-anchor="middle">priority == P1 ?</text>
+
+    <!-- dropped stub -->
+    <line x1="538" y1="521" x2="478" y2="521" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="4 4"/>
+    <circle cx="462" cy="521" r="9" fill="none" stroke="#9ca3af" stroke-width="1.75"/>
+    <line x1="456" y1="527" x2="468" y2="515" stroke="#9ca3af" stroke-width="1.75"/>
+    <text x="440" y="546" font-size="11" fill="#6b7280" text-anchor="middle">P2 dropped at the server — the agent is never woken</text>
+  </g>
+
+  <g id="s3">
+    <!-- 6 fire P1 -->
+    <text x="715" y="577" font-size="12" font-weight="600" fill="#1f2937" text-anchor="middle">&#9317;&#160;&#160;<tspan font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11">fire-incident.sh P1 “Checkout returning 500s”</tspan></text>
+    <line x1="870" y1="587" x2="562" y2="587" stroke="#334155" stroke-width="1.75" marker-end="url(#mSlate)"/>
+
+    <!-- 7 event -->
+    <text x="370" y="611" font-size="13" font-weight="700" fill="#dc2626" text-anchor="middle">&#9318;&#160;&#160;&#9889; event — P1 · checkout-service</text>
+    <line x1="538" y1="623" x2="202" y2="623" stroke="#dc2626" stroke-width="2.5" marker-end="url(#mRed)"/>
+
+    <!-- verdict -->
+    <rect x="30" y="637" width="320" height="50" rx="10" fill="#fef2f2" stroke="#fecaca" stroke-width="1.5"/>
+    <text x="190" y="657" font-size="11" font-style="italic" fill="#b91c1c" text-anchor="middle">“Paging on-call immediately — P1 on</text>
+    <text x="190" y="673" font-size="11" font-style="italic" fill="#b91c1c" text-anchor="middle">checkout-service indicates a critical outage.”</text>
+
+    <text x="540" y="712" font-size="14.5" font-weight="700" fill="#111827" text-anchor="middle">the P2 never reached the agent — filters run server-side&#160;&#160;<tspan font-size="10.5" font-weight="400" fill="#9ca3af">(the orders acts add the verify-via-tools loop)</tspan></text>
+  </g>
+</svg>
