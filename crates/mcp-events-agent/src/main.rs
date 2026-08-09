@@ -139,6 +139,15 @@ flag_order with a concise reason. Routine changes and rows leaving the result se
 \"deleted\") normally need no action. Never flag the same situation twice — check priorFlags. \
 End with one sentence: what happened and what you did.";
 
+/// Reaction system prompt, contextualized with the agent's task when present
+/// so the model judges events against ITS goal, not a generic review persona.
+fn contextual_prompt(base: &str, task: Option<&str>) -> String {
+    match task {
+        Some(t) => format!("{base}\n\nYour assigned task: {t}"),
+        None => base.to_owned(),
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "drasi-agent", about = "Event-driven MCP agent: events wake it, tools act")]
 struct Cli {
@@ -390,7 +399,7 @@ async fn main() -> Result<()> {
                 }
                 Ok(StreamFrame::Event(event)) => {
                     let new_cursor = event.cursor.clone().flatten();
-                    match handle_event(&event, mode, llm.as_ref(), &mcp, &tool_defs, &http).await {
+                    match handle_event(&event, mode, llm.as_ref(), cli.task.as_deref(), &mcp, &tool_defs, &http).await {
                         Ok(verdict) => {
                             log2(format!("agent: {verdict}"));
                             log("agent idle — waiting for next event");
@@ -469,6 +478,7 @@ async fn handle_event(
     event: &wire::EventOccurrence,
     mode: &str,
     llm: Option<&LlmConfig>,
+    task: Option<&str>,
     mcp: &impl ToolCaller,
     tool_defs: &[Value],
     http: &reqwest::Client,
@@ -485,7 +495,7 @@ async fn handle_event(
             data.get("title").and_then(Value::as_str).unwrap_or("(untitled)"),
         ));
         return match (mode, llm) {
-            ("llm", Some(cfg)) => triage_incident_llm(event, cfg, http).await,
+            ("llm", Some(cfg)) => triage_incident_llm(event, cfg, task, http).await,
             _ => Ok(triage_incident_policy(event)),
         };
     }
@@ -499,9 +509,11 @@ async fn handle_event(
     ));
     match (mode, llm) {
         ("llm", Some(cfg)) => match cfg.provider {
-            Provider::Anthropic => anthropic_brain(event, cfg, mcp, tool_defs, http).await,
-            Provider::OpenAi => openai_brain(event, cfg, mcp, tool_defs, http).await,
-            Provider::OpenAiResponses => responses_brain(event, cfg, mcp, tool_defs, http).await,
+            Provider::Anthropic => anthropic_brain(event, cfg, task, mcp, tool_defs, http).await,
+            Provider::OpenAi => openai_brain(event, cfg, task, mcp, tool_defs, http).await,
+            Provider::OpenAiResponses => {
+                responses_brain(event, cfg, task, mcp, tool_defs, http).await
+            }
         },
         _ => policy_brain(event, mcp).await,
     }
@@ -527,12 +539,13 @@ fn triage_incident_policy(event: &wire::EventOccurrence) -> String {
 async fn triage_incident_llm(
     event: &wire::EventOccurrence,
     cfg: &LlmConfig,
+    task: Option<&str>,
     http: &reqwest::Client,
 ) -> Result<String> {
     chat_once(
         cfg,
         http,
-        INCIDENT_PROMPT,
+        &contextual_prompt(INCIDENT_PROMPT, task),
         format!(
             "Incident event:\n{}",
             serde_json::to_string_pretty(&serde_json::to_value(event)?)?
@@ -678,6 +691,7 @@ async fn policy_brain(event: &wire::EventOccurrence, mcp: &impl ToolCaller) -> R
 async fn anthropic_brain(
     event: &wire::EventOccurrence,
     cfg: &LlmConfig,
+    task: Option<&str>,
     mcp: &impl ToolCaller,
     tool_defs: &[Value],
     http: &reqwest::Client,
@@ -703,7 +717,7 @@ async fn anthropic_brain(
                 // default and max_tokens bounds thinking + text + tool_use
                 // together — a tight cap truncates turns mid-thought.
                 "max_tokens": 8192,
-                "system": SYSTEM_PROMPT,
+                "system": contextual_prompt(SYSTEM_PROMPT, task),
                 "tools": tool_defs,
                 "messages": messages,
             }))
@@ -975,6 +989,7 @@ fn responses_tool_defs(tool_defs: &[Value]) -> Vec<Value> {
 async fn responses_brain(
     event: &wire::EventOccurrence,
     cfg: &LlmConfig,
+    task: Option<&str>,
     mcp: &impl ToolCaller,
     tool_defs: &[Value],
     http: &reqwest::Client,
@@ -988,7 +1003,7 @@ async fn responses_brain(
     for _ in 0..MAX_BRAIN_TURNS {
         let mut body = json!({
             "model": cfg.model,
-            "instructions": SYSTEM_PROMPT,
+            "instructions": contextual_prompt(SYSTEM_PROMPT, task),
             "input": input,
             "tools": tools,
         });
@@ -1072,13 +1087,14 @@ fn openai_tool_defs(tool_defs: &[Value]) -> Vec<Value> {
 async fn openai_brain(
     event: &wire::EventOccurrence,
     cfg: &LlmConfig,
+    task: Option<&str>,
     mcp: &impl ToolCaller,
     tool_defs: &[Value],
     http: &reqwest::Client,
 ) -> Result<String> {
     let tools = openai_tool_defs(tool_defs);
     let mut messages = vec![
-        json!({"role": "system", "content": SYSTEM_PROMPT}),
+        json!({"role": "system", "content": contextual_prompt(SYSTEM_PROMPT, task)}),
         json!({
             "role": "user",
             "content": format!(

@@ -1,89 +1,110 @@
-# Demo transcript — captured live 2026-08-08 16:04 PDT
-# Environment: fresh 'docker compose down -v' → plugin-install → up; cargo-built binaries.
+# Demo transcript — captured live 2026-08-09 15:48 PDT
+# Stack: Postgres+Drasi (2 continuous queries incl. drasi.trueFor) + injected incidents
+# LLM: Azure OpenAI gpt-5.4 via the Responses API dialect (real model output below).
+# All choices, rationales, tool calls, and verdicts are the model's own.
 
-## events-harness discover (excerpt: the extension declaration)
-{
-  "resultType": "complete",
-  "supportedVersions": [
-    "2024-11-05",
-    "2025-03-26",
-    "2025-06-18",
-    "2025-11-25",
-    "2026-07-28"
-  ],
-  "capabilities": {
-    "extensions": {
-      "io.modelcontextprotocol/events": {
-        "delivery": [
-          "poll",
-          "push",
-          "webhook"
-        ],
-        "methods": [
-          "events/list",
-          "events/poll",
-          "events/stream",
-          "events/subscribe",
-          "events/unsubscribe"
-        ]
-      }
-    },
-    "tools": {}
-  },
-  "_meta": {
-    "io.modelcontextprotocol/serverInfo": {
-      "name": "drasi-mcp-events",
-      "title": "Drasi-backed MCP server: orders tools + draft Events extension",
-      "version": "0.1.0"
-    }
-  }
-}
+## Act 1 — on-call task: the model chooses incidents.created + {priority: P1}
 
-## drasi-agent (policy brain) — three acts + laptop-closed replay
-[16:03:38] discovered drasi-mcp-events v0.1.0 (stateless 2026-07-28, no handshake) — events extension: yes
-[16:03:38]   tools (official Rust SDK): flag_order, get_customer_history, get_order
-[16:03:38] brain: policy (deterministic)
-[16:03:38] subscribing to high-value-orders.changed via events/stream …
-[16:03:38] stream active (cursor Some("6959621619933716582:0"))
-[16:03:41] EVENT ADDED order 5 (ivy, $7200) — waking agent
-[16:03:41]   tool → get_order({"order_id":5})
-[16:03:41]     ← {"customer":"ivy","id":5,"status":"open","total":7200.0}
-[16:03:41]   tool → get_customer_history({"customer":"ivy"})
-[16:03:41]     ← {"customer":"ivy","lifetimeTotal":7200.0,"orderCount":1,"orders":[{"id":5,"status":"open","total":7200.0}],"priorFlags":[]}
-[16:03:41]   tool → flag_order({"order_id":5,"reason":"first-ever order for ivy at $7200"})
-[16:03:41]     ← {"flagId":1,"flaggedAt":"2026-08-08 23:03:41.595535+00","flaggedBy":"mcp-events-demo-agent","orderId":5,"reason":"first-ever order for ivy at $7200"}
-[16:03:41]   agent: Flagged order 5 for review (flag #1): first-ever order for ivy at $7200.
-[16:03:41] agent idle — waiting for next event
-[16:03:45] EVENT UPDATED order 3 (carol, $2350) — waking agent
-[16:03:45]   tool → get_order({"order_id":3})
-[16:03:45]     ← {"customer":"carol","id":3,"status":"shipped","total":2350.0}
-[16:03:45]   tool → get_customer_history({"customer":"carol"})
-[16:03:45]     ← {"customer":"carol","lifetimeTotal":2350.0,"orderCount":1,"orders":[{"id":3,"status":"shipped","total":2350.0}],"priorFlags":[]}
-[16:03:45]   agent: Order 3 (carol, $2350) looks routine for this customer; no action taken.
-[16:03:45] agent idle — waiting for next event
-[16:03:49] EVENT DELETED order 5 (ivy, $7200) — waking agent
-[16:03:49]   agent: Order 5 (ivy) left the high-value set; no action needed.
-[16:03:49] agent idle — waiting for next event
-[16:03:56] discovered drasi-mcp-events v0.1.0 (stateless 2026-07-28, no handshake) — events extension: yes
-[16:03:56]   tools (official Rust SDK): flag_order, get_customer_history, get_order
-[16:03:56] brain: policy (deterministic)
-[16:03:56] resuming from persisted cursor Some("6959621619933716582:3")
-[16:03:56] subscribing to high-value-orders.changed via events/stream …
-[16:03:56] stream active (cursor Some("6959621619933716582:3"))
-[16:03:56] EVENT ADDED order 6 (jack, $12000) — waking agent
-[16:03:56]   tool → get_order({"order_id":6})
-[16:03:56]     ← {"customer":"jack","id":6,"status":"open","total":12000.0}
-[16:03:56]   tool → get_customer_history({"customer":"jack"})
-[16:03:56]     ← {"customer":"jack","lifetimeTotal":12000.0,"orderCount":1,"orders":[{"id":6,"status":"open","total":12000.0}],"priorFlags":[]}
-[16:03:56]   tool → flag_order({"order_id":6,"reason":"first-ever order for jack at $12000"})
-[16:03:56]     ← {"flagId":2,"flaggedAt":"2026-08-08 23:03:56.897266+00","flaggedBy":"mcp-events-demo-agent","orderId":6,"reason":"first-ever order for jack at $12000"}
-[16:03:56]   agent: Flagged order 6 for review (flag #2): first-ever order for jack at $12000.
-[16:03:56] agent idle — waiting for next event
+[15:44:47] discovered drasi-mcp-events v0.1.0 (stateless 2026-07-28, no handshake) — events extension: yes
+[15:44:47]   tools (official Rust SDK): flag_order, get_customer_history, get_order
+[15:44:47] brain: llm (OpenAiResponses dialect, model gpt-5.4, custom endpoint)
+[15:44:47] task: You are on-call: watch for P1 incidents and escalate them
+[15:44:47] discovering event streams via events/list — 3 available:
+[15:44:47]   · high-value-orders.changed — Fires when an order enters, changes within, or leaves the set of high-value orders (tota…
+[15:44:47]   · stuck-orders.changed — Fires when an order has remained in status 'open' for more than 45 seconds without being…
+[15:44:47]   · incidents.created — Fires when an operational incident is reported. Payload: {priority: "P1".."P4", service,…
+[15:44:49] chose incidents.created (arguments: {"priority":"P1"}) — This stream directly reports operational incidents and supports filtering to only P1 incidents, which matches the on-call escalation task.
+[15:44:49] subscribing to incidents.created via events/stream …
+[15:44:49] stream active (cursor Some("7788603905482452337:6"))
+[15:44:57] [background] routine batch work continues … (tick 1)
+[15:44:59] EVENT incidents.created P1 on checkout-service — Checkout returning 500s — waking agent
+[15:45:00]   agent: Paging/escalating immediately for P1 because checkout-service is returning 500s, indicating a critical customer-facing outage requiring urgent response.
+[15:45:00] agent idle — waiting for next event
+[15:45:05] [background] routine batch work continues … (tick 2)
+
+## Finale — agent was dead when a P1 fired; restart replays it from the cursor
+
+[15:45:09] discovered drasi-mcp-events v0.1.0 (stateless 2026-07-28, no handshake) — events extension: yes
+[15:45:09]   tools (official Rust SDK): flag_order, get_customer_history, get_order
+[15:45:09] brain: llm (OpenAiResponses dialect, model gpt-5.4, custom endpoint)
+[15:45:09] task: You are on-call: watch for P1 incidents and escalate them
+[15:45:09] discovering event streams via events/list — 3 available:
+[15:45:09]   · high-value-orders.changed — Fires when an order enters, changes within, or leaves the set of high-value orders (tota…
+[15:45:09]   · stuck-orders.changed — Fires when an order has remained in status 'open' for more than 45 seconds without being…
+[15:45:09]   · incidents.created — Fires when an operational incident is reported. Payload: {priority: "P1".."P4", service,…
+[15:45:12] chose incidents.created (arguments: {"priority":"P1"}) — This stream directly reports operational incidents and supports filtering to only P1 incidents, matching the on-call escalation task.
+[15:45:12] resuming from persisted cursor Some("7788603905482452337:8")
+[15:45:12] subscribing to incidents.created via events/stream …
+[15:45:12] stream active (cursor Some("7788603905482452337:8"))
+[15:45:12] EVENT incidents.created P1 on payments-api — Card auth failures spiking — waking agent
+[15:45:13]   agent: Paging the P1 on-call immediately because this is a P1 incident affecting payments-api with card authorization failures spiking, indicating a critical customer-impacting outage.
+[15:45:13] agent idle — waiting for next event
+[15:45:20] [background] routine batch work continues … (tick 1)
+
+## Act 2 — fraud task: chooses high-value-orders.changed, full tool loop
+
+[15:45:21] discovered drasi-mcp-events v0.1.0 (stateless 2026-07-28, no handshake) — events extension: yes
+[15:45:21]   tools (official Rust SDK): flag_order, get_customer_history, get_order
+[15:45:21] brain: llm (OpenAiResponses dialect, model gpt-5.4, custom endpoint)
+[15:45:21] task: Monitor high-value payment activity and flag anything that looks like possible fraud
+[15:45:21] discovering event streams via events/list — 3 available:
+[15:45:21]   · high-value-orders.changed — Fires when an order enters, changes within, or leaves the set of high-value orders (tota…
+[15:45:21]   · stuck-orders.changed — Fires when an order has remained in status 'open' for more than 45 seconds without being…
+[15:45:21]   · incidents.created — Fires when an operational incident is reported. Payload: {priority: "P1".."P4", service,…
+[15:45:23] chose high-value-orders.changed (arguments: none) — This stream is explicitly for monitoring significant high-value order and payment activity and is the best fit for spotting potential fraud.
+[15:45:23] subscribing to high-value-orders.changed via events/stream …
+[15:45:23] stream active (cursor Some("7788603905482452337:1"))
+[15:45:30] EVENT ADDED order 9 (nina, $8700) — waking agent
+[15:45:31] [background] routine batch work continues … (tick 1)
+[15:45:32]   tool → get_order({"order_id":9})
+[15:45:32]     ← {"customer":"nina","id":9,"status":"open","total":8700.0}
+[15:45:32]   tool → get_customer_history({"customer":"nina"})
+[15:45:32]     ← {"customer":"nina","lifetimeTotal":8700.0,"orderCount":1,"orders":[{"id":9,"status":"open","total":8700.0}],"priorFlags":[]}
+[15:45:34]   tool → flag_order({"order_id":9,"reason":"First order and unusually high total for customer"})
+[15:45:34]     ← {"flagId":1,"flaggedAt":"2026-08-09 22:45:34.041901+00","flaggedBy":"mcp-events-demo-agent","orderId":9,"reason":"First order and unusually high total for customer"}
+[15:45:35]   agent: Order 9 for nina was added and verified as an open $8,700 order; since this is the customer's first order with no prior similar flags, I flagged it for human review as unusually high for a first purchase.
+[15:45:35] agent idle — waiting for next event
+[15:45:39] [background] routine batch work continues … (tick 2)
+
+## Act 3 — stuck-orders task: temporal events fire with no triggering write
+
+[15:45:42] discovered drasi-mcp-events v0.1.0 (stateless 2026-07-28, no handshake) — events extension: yes
+[15:45:42]   tools (official Rust SDK): flag_order, get_customer_history, get_order
+[15:45:42] brain: llm (OpenAiResponses dialect, model gpt-5.4, custom endpoint)
+[15:45:42] task: Watch fulfillment for orders that get stuck without being processed
+[15:45:42] discovering event streams via events/list — 3 available:
+[15:45:42]   · high-value-orders.changed — Fires when an order enters, changes within, or leaves the set of high-value orders (tota…
+[15:45:42]   · stuck-orders.changed — Fires when an order has remained in status 'open' for more than 45 seconds without being…
+[15:45:42]   · incidents.created — Fires when an operational incident is reported. Payload: {priority: "P1".."P4", service,…
+[15:45:44] chose stuck-orders.changed (arguments: {"changeType":"added"}) — This stream directly targets orders that become stuck in fulfillment, and filtering for 'added' surfaces the moment an order first becomes unprocessed too long.
+[15:45:44] subscribing to stuck-orders.changed via events/stream …
+[15:45:44] stream active (cursor Some("7788603905482452337:1"))
+[15:45:52] [background] routine batch work continues … (tick 1)
+[15:46:00] [background] routine batch work continues … (tick 2)
+[15:46:08] [background] routine batch work continues … (tick 3)
+[15:46:15] EVENT ADDED order 9 (nina, $8700) — waking agent
+[15:46:16] [background] routine batch work continues … (tick 4)
+[15:46:18]   tool → get_order({"order_id":9})
+[15:46:18]     ← {"customer":"nina","id":9,"status":"open","total":8700.0}
+[15:46:18]   tool → get_customer_history({"customer":"nina"})
+[15:46:18]     ← {"customer":"nina","lifetimeTotal":8700.0,"orderCount":1,"orders":[{"id":9,"status":"open","total":8700.0}],"priorFlags":[{"flaggedAt":"2026-08-09 22:45:34.041901+00","flaggedBy":"mcp-events-demo-agen
+[15:46:19]   agent: Order 9 for nina is currently open at 8700, and since this customer’s history shows it is their first order but this exact situation was already flagged previously, I took no further action.
+[15:46:19] agent idle — waiting for next event
+[15:46:19] EVENT ADDED order 10 (oscar, $250) — waking agent
+[15:46:21]   tool → get_order({"order_id":10})
+[15:46:21]     ← {"customer":"oscar","id":10,"status":"open","total":250.0}
+[15:46:21]   tool → get_customer_history({"customer":"oscar"})
+[15:46:21]     ← {"customer":"oscar","lifetimeTotal":250.0,"orderCount":1,"orders":[{"id":10,"status":"open","total":250.0}],"priorFlags":[]}
+[15:46:23]   agent: Order 10 for oscar is currently open at 250, and because this is the customer’s first and only order with no prior flags, I treated it as routine and took no action.
+[15:46:23] agent idle — waiting for next event
+[15:46:24] [background] routine batch work continues … (tick 5)
+[15:46:32] [background] routine batch work continues … (tick 6)
+[15:46:40] [background] routine batch work continues … (tick 7)
+[15:46:48] [background] routine batch work continues … (tick 8)
 
 ## order_flags audit trail
- order_id |               reason                |      flagged_by       
-----------+-------------------------------------+-----------------------
-        5 | first-ever order for ivy at $7200   | mcp-events-demo-agent
-        6 | first-ever order for jack at $12000 | mcp-events-demo-agent
-(2 rows)
+ order_id |                      reason                       
+----------+---------------------------------------------------
+        9 | First order and unusually high total for customer
+(1 row)
 
