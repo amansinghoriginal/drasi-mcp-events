@@ -181,8 +181,9 @@ scripts/demo-reset.sh      # stops the MCP server, restores the 4 seed rows,
 ```
 
 Then start Terminal A (server) and Terminal B (agent) fresh. Docker containers keep
-running across resets. Nuclear option (rebuild the containers from scratch):
-`cd drasi && docker compose down -v && cd .. && scripts/demo-setup.sh`.
+running across resets. If you changed `drasi/server.yaml`/`seed.sql`, Drasi is wedged,
+or you want a known-good world before going on stage: `scripts/demo-hard-reset.sh`
+rebuilds the containers and volumes from scratch (~a minute).
 
 No LLM credentials? Everything above runs with the deterministic brain: the chooser falls
 back to keyword matching over the same catalog (still extracts `{"priority":"P1"}` from the
