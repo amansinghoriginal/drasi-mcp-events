@@ -101,8 +101,13 @@ docker exec drasi-demo-postgres psql -U demo -d demo \
 > "total > 1000" stopped being true. That's a continuous query talking, not a table trigger.
 > No raw webhook can express this.
 
-**Finale — close the laptop.** Kill the agent (Ctrl-C in Terminal B), make a change while
-nothing is listening, restart it:
+**Finale — the agent goes down.** Kill the agent (Ctrl-C in Terminal B), make a change
+while nothing is listening, restart it. (Everything runs on one machine here, so this is
+process death, not a closed lid — narrate it as "the consumer crashed and nobody noticed."
+Replay works because the *server* stayed up and still retains the event; a server restart
+instead yields `truncated: true` + a fresh cursor, the protocol's honest "you missed
+things — re-verify via tools" signal. With the server deployed remotely, this same beat
+becomes literally closing the laptop.)
 
 ```bash
 docker exec drasi-demo-postgres psql -U demo -d demo \
