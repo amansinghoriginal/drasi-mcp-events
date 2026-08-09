@@ -1,7 +1,7 @@
 # Drasi Demo Environment — Runbook
 
 Demo stack for the MCP Events prototype: PostgreSQL 16 (logical replication) + Drasi
-Server 0.1.0 running the `high-value-orders` continuous query (`orders` rows with
+Server 0.1.6 running the `high-value-orders` continuous query (`orders` rows with
 `total > 1000`) and an SSE reaction on port 8081.
 
 Prerequisites: Docker (with compose v2), `curl`. `psql` is optional — every database

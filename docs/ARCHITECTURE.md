@@ -1,4 +1,19 @@
-# Architecture & API Contract
+# Architecture & API Contract (historical)
+
+> **⚠️ HISTORICAL DOCUMENT — superseded.** This was the build contract for the
+> original clean-room implementation (multiple independent agents building crates
+> against pinned interfaces, protocol 2025-11-25, no external SDKs). The repo has
+> since been rebuilt as the MCP Events **demo**: the server core moved to the
+> official Rust SDK (rmcp 3.1.x) on MCP **2026-07-28**, a task-driven agent crate
+> (`mcp-events-agent`) and injected event streams were added, and the "do not edit
+> Cargo.toml / file ownership" rules below no longer apply.
+>
+> **For the current system, read:** [`../README.md`](../README.md) (architecture
+> diagram + crate table), [`../DEMO.md`](../DEMO.md) (runbook),
+> [`../CLAUDE.md`](../CLAUDE.md) (contributor/agent onboarding), and
+> [`NEXT-STEPS.md`](NEXT-STEPS.md) (roadmap). This file remains accurate about the
+> engine/wire/webhook internals it specifies (cursor lifecycle, subscription
+> store, SSE parsing) and as provenance for how the codebase was built.
 
 This document is the **binding contract** for all crates in this workspace. Implementers MUST
 conform to the signatures and conventions here so independently-built crates integrate cleanly.

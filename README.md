@@ -112,6 +112,13 @@ core, declared through the standard extensions capability map, next to an offici
 core — with the events methods dispatched in front of the SDK because no SDK ships
 extension hooks yet (the gap an Extensions-Track SEP would close).
 
+## Taking it forward
+
+Scoped follow-on work — durable WAL-derived cursors, SDK extension hooks (Route 2), the
+remote/webhook variant, sketch-rebase tracking — lives in
+**[docs/NEXT-STEPS.md](docs/NEXT-STEPS.md)**. Contributors (human or agent): start with
+[CLAUDE.md](CLAUDE.md) for commands, conventions, and the gotchas that will bite you.
+
 ## Known limitations
 
 Streamable HTTP only (no stdio); in-memory event buffer and subscription state by design
