@@ -45,6 +45,76 @@ const MAX_EVENT_ATTEMPTS: u32 = 3;
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// LLM connection resolved from the environment (optionally seeded from an
+/// untracked `.env`). Two wire dialects cover every deployment we care about:
+/// `anthropic` (api.anthropic.com, Claude in Microsoft Foundry) and `openai`
+/// (Azure OpenAI / any OpenAI-compatible chat-completions endpoint).
+#[derive(Clone, Debug, PartialEq)]
+struct LlmConfig {
+    provider: Provider,
+    /// Full URL to POST (for Azure, paste the portal's full endpoint —
+    /// including any `?api-version=` — so URL-shape differences never matter).
+    chat_url: String,
+    api_key: String,
+    model: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Provider {
+    Anthropic,
+    OpenAi,
+}
+
+impl LlmConfig {
+    /// Resolution order: explicit `LLM_*` variables win; a bare
+    /// `ANTHROPIC_API_KEY` keeps working as the zero-config path.
+    fn from_env(default_model: &str) -> Option<Self> {
+        let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let provider = match get("LLM_PROVIDER").as_deref() {
+            Some("openai") => Provider::OpenAi,
+            Some("anthropic") | None => Provider::Anthropic,
+            Some(other) => {
+                tracing::warn!(provider = other, "unknown LLM_PROVIDER; expected anthropic|openai");
+                return None;
+            }
+        };
+        let api_key = get("LLM_API_KEY").or_else(|| get("ANTHROPIC_API_KEY"))?;
+        let chat_url = get("LLM_CHAT_URL").unwrap_or_else(|| ANTHROPIC_URL.to_owned());
+        if provider == Provider::OpenAi && chat_url == ANTHROPIC_URL {
+            tracing::warn!("LLM_PROVIDER=openai requires LLM_CHAT_URL");
+            return None;
+        }
+        let model = get("LLM_MODEL").unwrap_or_else(|| default_model.to_owned());
+        Some(Self { provider, chat_url, api_key, model })
+    }
+}
+
+/// Loads KEY=VALUE lines from an env file into the process environment.
+/// Real environment variables win over file entries; `#` comments and blank
+/// lines are skipped; surrounding single/double quotes are stripped.
+fn load_env_file(path: &std::path::Path) -> usize {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return 0;
+    };
+    let mut loaded = 0;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        if !key.is_empty() && std::env::var_os(key).is_none() {
+            std::env::set_var(key, value);
+            loaded += 1;
+        }
+    }
+    loaded
+}
+
 const SYSTEM_PROMPT: &str = "You are an autonomous order-review agent. You are woken only when \
 the high-value-orders continuous query changes (a row entered, changed within, or left the \
 result set). You are not running continuously.\n\
@@ -63,12 +133,16 @@ struct Cli {
     /// Event type to subscribe to.
     #[arg(long, default_value = "high-value-orders.changed")]
     event: String,
-    /// auto = claude when ANTHROPIC_API_KEY is set, else policy.
-    #[arg(long, default_value = "auto", value_parser = ["auto", "claude", "policy"])]
+    /// auto = llm when credentials are configured (env or .env), else policy.
+    #[arg(long, default_value = "auto", value_parser = ["auto", "llm", "claude", "policy"])]
     mode: String,
-    /// Model for claude mode.
+    /// Model for llm mode (overridden by LLM_MODEL).
     #[arg(long, default_value = "claude-sonnet-5")]
     model: String,
+    /// Untracked env file with LLM connection details (LLM_PROVIDER,
+    /// LLM_CHAT_URL, LLM_API_KEY, LLM_MODEL). Real env vars win.
+    #[arg(long, default_value = ".env")]
+    env_file: PathBuf,
     /// Persists {"cursor": ...} between runs (durable replay across restarts).
     #[arg(long, default_value = "/tmp/drasi-agent-cursor.json")]
     state_file: PathBuf,
@@ -85,18 +159,21 @@ fn log2(msg: impl AsRef<str>) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mode = match cli.mode.as_str() {
-        "auto" => {
-            if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-                "claude"
-            } else {
-                "policy"
-            }
-        }
-        "claude" if std::env::var("ANTHROPIC_API_KEY").is_err() => {
-            anyhow::bail!("--mode claude requires ANTHROPIC_API_KEY")
-        }
-        m => m,
+    let loaded = load_env_file(&cli.env_file);
+    if loaded > 0 {
+        log(format!("loaded {loaded} variable(s) from {}", cli.env_file.display()));
+    }
+    let llm = LlmConfig::from_env(&cli.model);
+    let mode = match (cli.mode.as_str(), &llm) {
+        ("auto", Some(_)) => "llm",
+        ("auto", None) => "policy",
+        ("llm" | "claude", None) => anyhow::bail!(
+            "--mode llm requires credentials: set ANTHROPIC_API_KEY, or LLM_PROVIDER/\
+             LLM_CHAT_URL/LLM_API_KEY (directly or in {})",
+            cli.env_file.display()
+        ),
+        ("llm" | "claude", Some(_)) => "llm",
+        (m, _) => m,
     };
 
     // Events-extension view of the server: stateless discover (no handshake).
@@ -152,10 +229,14 @@ async fn main() -> Result<()> {
     ));
     log(format!(
         "brain: {mode}{}",
-        if mode == "claude" {
-            format!(" ({})", cli.model)
-        } else {
-            " (deterministic)".to_string()
+        match (&llm, mode) {
+            (Some(cfg), "llm") => format!(
+                " ({:?} dialect, model {}, {})",
+                cfg.provider,
+                cfg.model,
+                if cfg.chat_url == ANTHROPIC_URL { "api.anthropic.com" } else { "custom endpoint" }
+            ),
+            _ => " (deterministic)".to_string(),
         }
     ));
 
@@ -214,7 +295,7 @@ async fn main() -> Result<()> {
                 }
                 Ok(StreamFrame::Event(event)) => {
                     let new_cursor = event.cursor.clone().flatten();
-                    match handle_event(&event, mode, &cli.model, &mcp, &tool_defs, &http).await {
+                    match handle_event(&event, mode, llm.as_ref(), &mcp, &tool_defs, &http).await {
                         Ok(verdict) => {
                             log2(format!("agent: {verdict}"));
                             log("agent idle — waiting for next event");
@@ -292,7 +373,7 @@ fn persist(path: &PathBuf, cursor: &mut Option<String>, new: Option<String>) {
 async fn handle_event(
     event: &wire::EventOccurrence,
     mode: &str,
-    model: &str,
+    llm: Option<&LlmConfig>,
     mcp: &impl ToolCaller,
     tool_defs: &[Value],
     http: &reqwest::Client,
@@ -306,10 +387,12 @@ async fn handle_event(
         row.get("customer").and_then(Value::as_str).unwrap_or("?"),
         row.get("total").and_then(Value::as_f64).unwrap_or(0.0),
     ));
-    if mode == "claude" {
-        claude_brain(event, model, mcp, tool_defs, http).await
-    } else {
-        policy_brain(event, mcp).await
+    match (mode, llm) {
+        ("llm", Some(cfg)) => match cfg.provider {
+            Provider::Anthropic => anthropic_brain(event, cfg, mcp, tool_defs, http).await,
+            Provider::OpenAi => openai_brain(event, cfg, mcp, tool_defs, http).await,
+        },
+        _ => policy_brain(event, mcp).await,
     }
 }
 
@@ -445,15 +528,15 @@ async fn policy_brain(event: &wire::EventOccurrence, mcp: &impl ToolCaller) -> R
     ))
 }
 
-/// Claude tool-use loop over the raw Messages API (no SDK dependency).
-async fn claude_brain(
+/// Claude tool-use loop over the raw Messages API dialect (api.anthropic.com
+/// or an Anthropic-compatible endpoint such as Claude in Microsoft Foundry).
+async fn anthropic_brain(
     event: &wire::EventOccurrence,
-    model: &str,
+    cfg: &LlmConfig,
     mcp: &impl ToolCaller,
     tool_defs: &[Value],
     http: &reqwest::Client,
 ) -> Result<String> {
-    let api_key = std::env::var("ANTHROPIC_API_KEY")?;
     let mut messages = vec![json!({
         "role": "user",
         "content": format!(
@@ -463,11 +546,14 @@ async fn claude_brain(
     })];
     for _ in 0..MAX_BRAIN_TURNS {
         let resp = http
-            .post(ANTHROPIC_URL)
-            .header("x-api-key", &api_key)
+            .post(&cfg.chat_url)
+            // x-api-key is the Anthropic header; api-key is what Azure-hosted
+            // gateways expect. Sending both is harmless either way.
+            .header("x-api-key", &cfg.api_key)
+            .header("api-key", &cfg.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&json!({
-                "model": model,
+                "model": cfg.model,
                 // Roomy cap: on Claude 5 models adaptive thinking is on by
                 // default and max_tokens bounds thinking + text + tool_use
                 // together — a tight cap truncates turns mid-thought.
@@ -518,6 +604,98 @@ async fn claude_brain(
             }
         }
         messages.push(json!({"role": "user", "content": results}));
+    }
+    Ok("(stopped: exceeded max tool-use turns)".to_owned())
+}
+
+/// Converts Anthropic-shaped tool defs ({name, description, input_schema})
+/// to OpenAI chat-completions function tools.
+fn openai_tool_defs(tool_defs: &[Value]) -> Vec<Value> {
+    tool_defs
+        .iter()
+        .map(|d| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": d["name"],
+                    "description": d["description"],
+                    "parameters": d["input_schema"],
+                }
+            })
+        })
+        .collect()
+}
+
+/// Tool-use loop over the OpenAI chat-completions dialect (Azure OpenAI or
+/// any OpenAI-compatible endpoint). `cfg.chat_url` is the full URL to POST —
+/// for Azure, paste the deployment endpoint including `?api-version=`.
+async fn openai_brain(
+    event: &wire::EventOccurrence,
+    cfg: &LlmConfig,
+    mcp: &impl ToolCaller,
+    tool_defs: &[Value],
+    http: &reqwest::Client,
+) -> Result<String> {
+    let tools = openai_tool_defs(tool_defs);
+    let mut messages = vec![
+        json!({"role": "system", "content": SYSTEM_PROMPT}),
+        json!({
+            "role": "user",
+            "content": format!(
+                "A watched-query change event just arrived:\n{}",
+                serde_json::to_string_pretty(&serde_json::to_value(event)?)?
+            ),
+        }),
+    ];
+    for _ in 0..MAX_BRAIN_TURNS {
+        let resp = http
+            .post(&cfg.chat_url)
+            // api-key is Azure's header; Authorization covers OpenAI-compatible
+            // endpoints that expect a bearer token. Sending both is harmless.
+            .header("api-key", &cfg.api_key)
+            .header("authorization", format!("Bearer {}", cfg.api_key))
+            .json(&json!({
+                "model": cfg.model,
+                "messages": messages,
+                "tools": tools,
+            }))
+            .send()
+            .await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        if !status.is_success() {
+            anyhow::bail!("llm api {status}: {body}");
+        }
+        let response: Value = serde_json::from_str(&body)?;
+        let message = response["choices"][0]["message"].clone();
+        let finish = response["choices"][0]["finish_reason"].as_str().unwrap_or("");
+        let tool_calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
+        if tool_calls.is_empty() {
+            let text = message["content"].as_str().unwrap_or("").to_owned();
+            return match finish {
+                "stop" => Ok(text),
+                other => anyhow::bail!(
+                    "unexpected finish_reason {other:?} from the model (partial text: {text:?})"
+                ),
+            };
+        }
+        messages.push(message.clone());
+        for call in &tool_calls {
+            let name = call["function"]["name"].as_str().unwrap_or("");
+            let args: Value = call["function"]["arguments"]
+                .as_str()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_else(|| json!({}));
+            let payload = mcp
+                .call(name, args)
+                .await
+                .unwrap_or_else(|e| json!({"error": e.to_string()}));
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "content": payload.to_string(),
+            }));
+        }
     }
     Ok("(stopped: exceeded max tool-use turns)".to_owned())
 }
@@ -587,6 +765,40 @@ mod tests {
         assert!(
             !tools.calls.lock().unwrap().iter().any(|c| c == "flag_order"),
             "routine order was flagged"
+        );
+    }
+
+    #[test]
+    fn env_file_parsing_and_precedence() {
+        let dir = std::env::temp_dir().join("drasi-agent-env-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(
+            &path,
+            "# comment\nTEST_ENVFILE_A=hello\nTEST_ENVFILE_B=\"quoted value\"\n\nnot a pair\nTEST_ENVFILE_C=x=y\n",
+        )
+        .unwrap();
+        std::env::set_var("TEST_ENVFILE_A", "real-env-wins");
+        let loaded = load_env_file(&path);
+        assert_eq!(loaded, 2, "A is preset, B and C load");
+        assert_eq!(std::env::var("TEST_ENVFILE_A").unwrap(), "real-env-wins");
+        assert_eq!(std::env::var("TEST_ENVFILE_B").unwrap(), "quoted value");
+        assert_eq!(std::env::var("TEST_ENVFILE_C").unwrap(), "x=y");
+    }
+
+    #[test]
+    fn openai_tool_def_conversion() {
+        let defs = vec![json!({
+            "name": "get_order",
+            "description": "d",
+            "input_schema": {"type": "object", "properties": {"order_id": {"type": "integer"}}}
+        })];
+        let out = openai_tool_defs(&defs);
+        assert_eq!(out[0]["type"], "function");
+        assert_eq!(out[0]["function"]["name"], "get_order");
+        assert_eq!(
+            out[0]["function"]["parameters"]["properties"]["order_id"]["type"],
+            "integer"
         );
     }
 
