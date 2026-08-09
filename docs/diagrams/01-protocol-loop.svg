@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 672" font-family="-apple-system, 'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="mBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#2563eb"/>
+    </marker>
+    <marker id="mGray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="mRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1080" height="672" fill="#ffffff"/>
+
+  <!-- title -->
+  <text x="40" y="34" font-size="16" font-weight="700" fill="#111827">MCP Events — the protocol loop</text>
+  <text x="40" y="52" font-size="11" fill="#9ca3af">one agent, one server, one protocol</text>
+
+  <!-- lane headers -->
+  <rect x="125" y="66" width="150" height="46" rx="10" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5"/>
+  <text x="200" y="86" font-size="14" font-weight="700" fill="#1f2937" text-anchor="middle">AGENT</text>
+  <text x="200" y="103" font-size="10.5" fill="#9ca3af" text-anchor="middle">LLM app, given a task</text>
+
+  <rect x="625" y="66" width="150" height="46" rx="10" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5"/>
+  <text x="700" y="86" font-size="14" font-weight="700" fill="#1f2937" text-anchor="middle">MCP SERVER</text>
+  <text x="700" y="103" font-size="10.5" fill="#9ca3af" text-anchor="middle">one endpoint · /mcp</text>
+
+  <!-- lifelines -->
+  <line x1="200" y1="112" x2="200" y2="586" stroke="#e5e7eb" stroke-width="2"/>
+  <line x1="700" y1="112" x2="700" y2="586" stroke="#e5e7eb" stroke-width="2"/>
+
+  <!-- 1 events/list -->
+  <text x="450" y="140" font-size="12.5" font-weight="600" fill="#1f2937" text-anchor="middle">&#9312;&#160;&#160;events/list</text>
+  <line x1="210" y1="150" x2="688" y2="150" stroke="#2563eb" stroke-width="1.75" marker-end="url(#mBlue)"/>
+  <text x="450" y="166" font-size="11" fill="#6b7280" text-anchor="middle">“what can I watch?”</text>
+
+  <!-- 2 catalog response -->
+  <text x="450" y="192" font-size="12.5" font-weight="600" fill="#475569" text-anchor="middle">&#9313;&#160;&#160;catalog: streams + descriptions + schemas</text>
+  <line x1="690" y1="202" x2="212" y2="202" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#mGray)"/>
+  <text x="450" y="218" font-size="11" fill="#6b7280" text-anchor="middle">written for models to read — like tool schemas</text>
+
+  <!-- 3 choose (agent-internal) -->
+  <rect x="88" y="236" width="224" height="54" rx="10" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="200" y="258" font-size="12.5" font-weight="700" fill="#1d4ed8" text-anchor="middle">&#9314;&#160;&#160;chooses a stream + arguments</text>
+  <text x="200" y="276" font-size="11" fill="#3b82f6" text-anchor="middle">a reasoning step, not config</text>
+
+  <!-- 4 subscribe -->
+  <text x="450" y="318" font-size="12.5" font-weight="600" fill="#1f2937" text-anchor="middle">&#9315;&#160;&#160;subscribe&#160;&#160;{ stream, arguments }</text>
+  <line x1="210" y1="328" x2="688" y2="328" stroke="#2563eb" stroke-width="1.75" marker-end="url(#mBlue)"/>
+  <text x="450" y="344" font-size="11" fill="#6b7280" text-anchor="middle">once — then nothing, until the world changes</text>
+
+  <!-- time-passes band -->
+  <rect x="70" y="360" width="760" height="52" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.25" stroke-dasharray="6 5"/>
+  <text x="200" y="382" font-size="11.5" font-weight="600" fill="#64748b" text-anchor="middle">agent: does other work — or sleeps</text>
+  <text x="200" y="399" font-size="10.5" fill="#94a3b8" text-anchor="middle">an open subscription costs nothing</text>
+  <text x="450" y="391" font-size="11.5" font-style="italic" fill="#94a3b8" text-anchor="middle">…&#160;time passes&#160;…</text>
+  <text x="700" y="391" font-size="11.5" font-weight="600" fill="#64748b" text-anchor="middle">server: watches the world</text>
+
+  <!-- 5 event (the accent) -->
+  <text x="450" y="440" font-size="13" font-weight="700" fill="#dc2626" text-anchor="middle">&#9316;&#160;&#160;&#9889; event { payload }</text>
+  <line x1="690" y1="452" x2="212" y2="452" stroke="#dc2626" stroke-width="2.5" marker-end="url(#mRed)"/>
+  <text x="450" y="469" font-size="11" fill="#ef4444" text-anchor="middle">server-initiated — wakes the agent</text>
+
+  <!-- red callout -->
+  <rect x="800" y="416" width="244" height="72" rx="10" fill="#fef2f2" stroke="#fecaca" stroke-width="1.5"/>
+  <text x="922" y="440" font-size="12" font-weight="700" fill="#b91c1c" text-anchor="middle">the new primitive</text>
+  <text x="922" y="458" font-size="11" fill="#dc2626" text-anchor="middle">a server-initiated, payload-carrying</text>
+  <text x="922" y="474" font-size="11" fill="#dc2626" text-anchor="middle">wake — the arrow MCP didn’t have</text>
+  <path d="M 800 452 C 770 452, 750 452, 706 452" fill="none" stroke="#fca5a5" stroke-width="1.25" stroke-dasharray="4 4"/>
+
+  <!-- 6 verify -->
+  <text x="450" y="504" font-size="12.5" font-weight="600" fill="#1f2937" text-anchor="middle">&#9317;&#160;&#160;tools — verify&#160;&#160;(get_…)</text>
+  <line x1="210" y1="514" x2="688" y2="514" stroke="#2563eb" stroke-width="1.75" marker-end="url(#mBlue)"/>
+  <text x="450" y="530" font-size="11" fill="#6b7280" text-anchor="middle">events carry triage data; the truth stays behind tools</text>
+
+  <!-- 7 act -->
+  <text x="450" y="556" font-size="12.5" font-weight="600" fill="#1f2937" text-anchor="middle">&#9318;&#160;&#160;tools — act&#160;&#160;(flag_…, page_…)</text>
+  <line x1="210" y1="566" x2="688" y2="566" stroke="#2563eb" stroke-width="1.75" marker-end="url(#mBlue)"/>
+  <text x="450" y="582" font-size="11" fill="#6b7280" text-anchor="middle">actions are ordinary, audited tool calls</text>
+
+  <!-- 8 back to sleep -->
+  <text x="200" y="608" font-size="11.5" font-weight="600" fill="#94a3b8" text-anchor="middle">&#8635;&#160;&#160;back to sleep — until the next event</text>
+
+  <!-- bottom caption + legend -->
+  <text x="540" y="640" font-size="15" font-weight="700" fill="#111827" text-anchor="middle">one protocol: discover · choose · subscribe · wake · verify · act</text>
+
+  <line x1="285" y1="658" x2="317" y2="658" stroke="#2563eb" stroke-width="1.75" marker-end="url(#mBlue)"/>
+  <text x="325" y="662" font-size="10.5" fill="#6b7280">agent-initiated — all of MCP today</text>
+  <line x1="565" y1="658" x2="597" y2="658" stroke="#dc2626" stroke-width="2.25" marker-end="url(#mRed)"/>
+  <text x="605" y="662" font-size="10.5" fill="#6b7280">server-initiated — the Events extension</text>
+</svg>
