@@ -24,15 +24,14 @@ Three terminals: **A** server · **B** agent · **C** where you make things happ
 ## 0. One-time setup
 
 ```bash
-cargo build --workspace
-cd drasi
-docker compose run --rm plugin-install     # one-time: Drasi plugins
-docker compose up -d                       # postgres:16 + drasi-server (2 queries)
-curl -fsS http://localhost:8080/health
-cd ..
-cp .env.example .env                       # add your LLM credentials (optional:
-                                           # without them the deterministic brain runs)
+scripts/demo-setup.sh      # builds binaries, installs Drasi plugins, starts docker,
+                           # waits for health (idempotent — safe to re-run)
+cp .env.example .env       # optional: LLM credentials; without them the
+                           # deterministic brain runs the same beats
 ```
+
+Only Postgres and the Drasi server live in Docker; the MCP server and agent are host
+binaries you run in terminals below.
 
 Terminal A: `cargo run -p mcp-events-server -- --config crates/mcp-events-server/examples/drasi.yaml`
 
@@ -177,11 +176,13 @@ EVENT … — waking agent            ← the one that fired while it was down
 ## Reset between runs
 
 ```bash
-docker exec drasi-demo-postgres psql -U demo -d demo -c "TRUNCATE order_flags RESTART IDENTITY;"
-rm -f /tmp/drasi-agent-cursor.json
-# full env reset (down -v deletes the plugin volume → reinstall before up):
-cd drasi && docker compose down -v && docker compose run --rm plugin-install && docker compose up -d
+scripts/demo-reset.sh      # stops the MCP server, restores the 4 seed rows,
+                           # clears order_flags and all agent cursor files
 ```
+
+Then start Terminal A (server) and Terminal B (agent) fresh. Docker containers keep
+running across resets. Nuclear option (rebuild the containers from scratch):
+`cd drasi && docker compose down -v && cd .. && scripts/demo-setup.sh`.
 
 No LLM credentials? Everything above runs with the deterministic brain: the chooser falls
 back to keyword matching over the same catalog (still extracts `{"priority":"P1"}` from the

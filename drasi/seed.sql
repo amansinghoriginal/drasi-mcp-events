@@ -15,10 +15,13 @@ CREATE TABLE orders (
 ALTER TABLE orders REPLICA IDENTITY FULL;
 
 -- Rows both above and below the high-value threshold (total > 1000).
+-- No seed row is status 'open': the stuck-orders temporal query watches
+-- 'open', and seed rows would otherwise fire spurious "stuck" events 45s
+-- after every bring-up/reset. Demo acts insert fresh 'open' rows themselves.
 INSERT INTO orders (customer, total, status) VALUES
-    ('alice', 1500.00, 'open'),      -- above threshold: in query result set
-    ('bob',    250.00, 'open'),      -- below threshold
-    ('carol', 2200.50, 'shipped'),   -- above threshold: in query result set
+    ('alice', 1500.00, 'paid'),      -- above threshold: in high-value result set
+    ('bob',    250.00, 'pending'),   -- below threshold
+    ('carol', 2200.50, 'shipped'),   -- above threshold: in high-value result set
     ('dave',   999.99, 'pending');   -- below threshold (boundary, NOT > 1000)
 
 -- Agent actions land here (written by the flag_order MCP tool). Kept as a
