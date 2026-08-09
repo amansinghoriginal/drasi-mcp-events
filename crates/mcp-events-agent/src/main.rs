@@ -359,7 +359,10 @@ async fn policy_brain(event: &wire::EventOccurrence, mcp: &impl ToolCaller) -> R
             ));
         }
     }
-    if !prior_flags.is_empty() {
+    // Corroborating signal only: prior flags strengthen an existing anomaly
+    // reason but never trigger a flag by themselves — otherwise one flag would
+    // taint every future routine order for that customer.
+    if !reasons.is_empty() && !prior_flags.is_empty() {
         reasons.push_back(format!("customer has {} prior flag(s)", prior_flags.len()));
     }
     if reasons.is_empty() {
@@ -395,29 +398,42 @@ async fn claude_brain(
         ),
     })];
     for _ in 0..MAX_BRAIN_TURNS {
-        let response: Value = http
+        let resp = http
             .post(ANTHROPIC_URL)
             .header("x-api-key", &api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&json!({
                 "model": model,
-                "max_tokens": 1024,
+                // Roomy cap: on Claude 5 models adaptive thinking is on by
+                // default and max_tokens bounds thinking + text + tool_use
+                // together — a tight cap truncates turns mid-thought.
+                "max_tokens": 8192,
                 "system": SYSTEM_PROMPT,
                 "tools": tool_defs,
                 "messages": messages,
             }))
             .send()
-            .await?
-            .error_for_status()?
-            .json()
             .await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        if !status.is_success() {
+            anyhow::bail!("anthropic api {status}: {body}");
+        }
+        let response: Value = serde_json::from_str(&body)?;
         let content = response["content"].as_array().cloned().unwrap_or_default();
-        if response["stop_reason"] != "tool_use" {
-            return Ok(content
-                .iter()
-                .filter_map(|b| (b["type"] == "text").then(|| b["text"].as_str().unwrap_or("")))
-                .collect::<Vec<_>>()
-                .join(""));
+        let text = content
+            .iter()
+            .filter_map(|b| (b["type"] == "text").then(|| b["text"].as_str().unwrap_or("")))
+            .collect::<Vec<_>>()
+            .join("");
+        match response["stop_reason"].as_str() {
+            Some("tool_use") => {}
+            Some("end_turn") | Some("stop_sequence") => return Ok(text),
+            // max_tokens, refusal, … must surface as errors, not silently
+            // pass for a final answer with the actions dropped.
+            other => anyhow::bail!(
+                "unexpected stop_reason {other:?} from the model (partial text: {text:?})"
+            ),
         }
         messages.push(json!({"role": "assistant", "content": content}));
         let mut results = vec![];
@@ -440,4 +456,88 @@ async fn claude_brain(
         messages.push(json!({"role": "user", "content": results}));
     }
     Ok("(stopped: exceeded max tool-use turns)".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct MockTools {
+        calls: Mutex<Vec<String>>,
+        order_total: f64,
+        history: Value,
+    }
+
+    impl ToolCaller for MockTools {
+        async fn call(&self, name: &str, _args: Value) -> Result<Value> {
+            self.calls.lock().unwrap().push(name.to_owned());
+            Ok(match name {
+                "get_order" => json!({
+                    "id": 6, "customer": "ivy", "total": self.order_total, "status": "open"
+                }),
+                "get_customer_history" => self.history.clone(),
+                "flag_order" => json!({"flagId": 9}),
+                _ => Value::Null,
+            })
+        }
+    }
+
+    fn added_event(total: f64) -> wire::EventOccurrence {
+        serde_json::from_value(json!({
+            "eventId": "e1",
+            "name": "high-value-orders.changed",
+            "timestamp": "2026-08-09T00:00:00Z",
+            "data": {
+                "changeType": "added",
+                "after": {"id": 6, "customer": "ivy", "total": total, "status": "open"}
+            },
+        }))
+        .expect("event")
+    }
+
+    fn history_with_flag_on_other_order() -> Value {
+        json!({
+            "customer": "ivy", "orderCount": 2, "lifetimeTotal": 9200.0,
+            "orders": [
+                {"id": 5, "total": 7200.0, "status": "open"},
+                {"id": 6, "total": 2000.0, "status": "open"}
+            ],
+            "priorFlags": [
+                {"orderId": 5, "reason": "first-ever order", "flaggedBy": "t", "flaggedAt": "x"}
+            ],
+        })
+    }
+
+    #[tokio::test]
+    async fn prior_flag_alone_does_not_flag_a_routine_order() {
+        // ivy has a flag on order 5; a routine $2000 order (< 3x her $7200
+        // peak) must NOT be flagged just because that other flag exists.
+        let tools = MockTools {
+            calls: Mutex::new(vec![]),
+            order_total: 2000.0,
+            history: history_with_flag_on_other_order(),
+        };
+        let verdict = policy_brain(&added_event(2000.0), &tools).await.expect("verdict");
+        assert!(verdict.contains("routine"), "unexpected verdict: {verdict}");
+        assert!(
+            !tools.calls.lock().unwrap().iter().any(|c| c == "flag_order"),
+            "routine order was flagged"
+        );
+    }
+
+    #[tokio::test]
+    async fn prior_flag_corroborates_a_real_anomaly() {
+        // $25000 is >= 3x the $7200 peak: flag, citing both the anomaly and
+        // the prior flag as supporting context.
+        let tools = MockTools {
+            calls: Mutex::new(vec![]),
+            order_total: 25000.0,
+            history: history_with_flag_on_other_order(),
+        };
+        let verdict = policy_brain(&added_event(25000.0), &tools).await.expect("verdict");
+        assert!(verdict.contains("Flagged"), "unexpected verdict: {verdict}");
+        assert!(verdict.contains("prior flag"), "missing corroboration: {verdict}");
+        assert!(tools.calls.lock().unwrap().iter().any(|c| c == "flag_order"));
+    }
 }
