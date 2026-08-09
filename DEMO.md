@@ -140,7 +140,11 @@ EVENT ADDED order 9 (leo, $300) — waking agent          ← fired by time pass
 > became true. There is no cron job, no poller, no trigger anywhere in this system. The
 > continuous query noticed time passing."* (`drasi.trueFor` in drasi/server.yaml.)
 > Bonus: `UPDATE orders SET status='shipped' WHERE customer='leo'` → the agent gets
-> `DELETED` — "unstuck" — from a plain UPDATE.
+> `DELETED` — "unstuck" — from a plain UPDATE. *Caveat: the model sometimes narrows its
+> subscription to `{"changeType": "added"}` (it did in our recorded run — a reasonable
+> reading of the task), which filters the unstuck event out. If you want this bonus beat
+> guaranteed, run the agent with the manual override instead:
+> `--event stuck-orders.changed`.*
 
 ## Finale — the consumer dies and misses nothing
 
@@ -155,6 +159,13 @@ EVENT … — waking agent            ← the one that fired while it was down
 > **Say:** *"client-owned cursor + server-side retention = at-least-once, from primitives
 > the extension already defines. A server restart instead yields `truncated: true` — the
 > protocol's honest 'you missed things, re-verify via tools' signal."*
+>
+> Mechanics: cursor files are keyed **per stream** (`/tmp/drasi-agent-cursor-<stream>.json`),
+> so replay works when the restarted agent lands on the same stream. The LLM re-choice is
+> not strictly deterministic — with the same task it reliably picks the same *stream* (args
+> may vary, which is harmless: the cursor belongs to the stream, and arguments only filter).
+> For a zero-variance stage finale, pin the restart with
+> `--event incidents.created --params '{"priority":"P1"}'`.
 
 ## For the WG cut, add (2 min)
 

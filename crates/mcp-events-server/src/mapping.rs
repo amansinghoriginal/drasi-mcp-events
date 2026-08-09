@@ -42,13 +42,18 @@ fn change_type_input_schema() -> Value {
 /// poll/stream/webhook reads, per the configured `eventModeling` mode.
 pub fn build_event_model(
     config: &ServerConfig,
-) -> (Vec<EventDefinition>, HashMap<String, Arc<ParamFilter>>) {
+) -> (
+    Vec<EventDefinition>,
+    HashMap<String, Arc<ParamFilter>>,
+    std::collections::HashSet<String>,
+) {
     let mut delivery = vec![DeliveryMode::Poll, DeliveryMode::Push];
     if config.webhook.enabled {
         delivery.push(DeliveryMode::Webhook);
     }
     let mut defs = Vec::new();
     let mut filters: HashMap<String, Arc<ParamFilter>> = HashMap::new();
+    let mut diff_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for q in &config.queries {
         // queries[].payloadSchema describes the projected row; event payload
         // schemas are derived from it (assumption recorded in spec gaps).
@@ -89,6 +94,7 @@ pub fn build_event_model(
                         Some(_) => false,
                     }
                 });
+                diff_names.insert(name.clone());
                 filters.insert(name, filter);
             }
             EventModeling::PerChange => {
@@ -158,7 +164,7 @@ pub fn build_event_model(
             }),
         );
     }
-    (defs, filters)
+    (defs, filters, diff_names)
 }
 
 /// Maps one feed change to an emitted event per the modeling mode. Returns
@@ -225,7 +231,7 @@ pub fn map_feed_event(mode: EventModeling, ev: FeedEvent) -> Option<EmittedEvent
 /// the pinned dependency set): params must be an object, and for event types
 /// that advertise the `changeType` filter its value must be a valid kind.
 pub fn validate_event_params(
-    filters: &HashMap<String, Arc<ParamFilter>>,
+    diff_names: &std::collections::HashSet<String>,
     name: &str,
     params: Option<&Value>,
 ) -> Result<(), JsonRpcError> {
@@ -236,7 +242,7 @@ pub fn validate_event_params(
     let Some(obj) = params.as_object() else {
         return Err(JsonRpcError::invalid_params("params must be an object"));
     };
-    if filters.contains_key(name) {
+    if diff_names.contains(name) {
         if let Some(ct) = obj.get("changeType") {
             let ok = ct.is_null() || ct.as_str().is_some_and(|s| CHANGE_TYPES.contains(&s));
             if !ok {
@@ -357,7 +363,7 @@ mod tests {
             })),
             payload_schema: None,
         }];
-        let (defs, filters) = build_event_model(&cfg);
+        let (defs, filters, _) = build_event_model(&cfg);
         assert!(defs.iter().any(|d| d.name == "incidents.created"));
         let f = filters.get("incidents.created").expect("filter registered");
         let p1 = json!({"priority": "P1", "service": "x", "title": "t"});
@@ -372,8 +378,50 @@ mod tests {
     }
 
     #[test]
+    fn injected_types_are_exempt_from_change_type_validation() {
+        let mut cfg = config(EventModeling::Single, false);
+        cfg.injected = vec![InjectedEventType {
+            name: "incidents.created".into(),
+            description: "test".into(),
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": { "priority": { "enum": ["P1", "P2"] } }
+            })),
+            payload_schema: None,
+        }];
+        let (_, _, diff_names) = build_event_model(&cfg);
+        // A changeType param on an injected type is not subject to the
+        // diff-type enum validation (it is just an unknown filter key there).
+        assert!(validate_event_params(
+            &diff_names,
+            "incidents.created",
+            Some(&json!({"changeType": "bogus"}))
+        )
+        .is_ok());
+        // The query-derived type still enforces the enum.
+        assert!(validate_event_params(
+            &diff_names,
+            "q1.changed",
+            Some(&json!({"changeType": "bogus"}))
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn injected_name_collision_rejected_at_config_validation() {
+        let mut cfg = config(EventModeling::Single, false);
+        cfg.injected = vec![InjectedEventType {
+            name: "q1.changed".into(),
+            description: "collides with the query-derived type".into(),
+            input_schema: None,
+            payload_schema: None,
+        }];
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
     fn single_mode_registers_one_changed_type_with_filter() {
-        let (defs, filters) = build_event_model(&config(EventModeling::Single, false));
+        let (defs, filters, _) = build_event_model(&config(EventModeling::Single, false));
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "q1.changed");
         assert_eq!(
@@ -390,13 +438,13 @@ mod tests {
 
     #[test]
     fn webhook_enabled_adds_delivery_mode() {
-        let (defs, _) = build_event_model(&config(EventModeling::Single, true));
+        let (defs, _, _) = build_event_model(&config(EventModeling::Single, true));
         assert!(defs[0].delivery.contains(&DeliveryMode::Webhook));
     }
 
     #[test]
     fn per_change_mode_registers_three_types_without_filters() {
-        let (defs, filters) = build_event_model(&config(EventModeling::PerChange, false));
+        let (defs, filters, _) = build_event_model(&config(EventModeling::PerChange, false));
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, vec!["q1.added", "q1.updated", "q1.deleted"]);
         assert!(filters.is_empty());
@@ -494,7 +542,7 @@ mod tests {
 
     #[test]
     fn change_type_filter_matches_data() {
-        let (_, filters) = build_event_model(&config(EventModeling::Single, false));
+        let (_, filters, _) = build_event_model(&config(EventModeling::Single, false));
         let f = filters.get("q1.changed").unwrap();
         let data = json!({"changeType": "added", "after": {}});
         assert!(f(&json!({"changeType": "added"}), &data));
@@ -506,9 +554,9 @@ mod tests {
 
     #[test]
     fn validate_event_params_enforces_change_type_enum() {
-        let (_, filters) = build_event_model(&config(EventModeling::Single, false));
-        let ok = |v: Value| validate_event_params(&filters, "q1.changed", Some(&v)).is_ok();
-        assert!(validate_event_params(&filters, "q1.changed", None).is_ok());
+        let (_, _, diff_names) = build_event_model(&config(EventModeling::Single, false));
+        let ok = |v: Value| validate_event_params(&diff_names, "q1.changed", Some(&v)).is_ok();
+        assert!(validate_event_params(&diff_names, "q1.changed", None).is_ok());
         assert!(ok(json!({})));
         assert!(ok(json!({"changeType": "updated"})));
         assert!(ok(json!({"changeType": null})));
@@ -517,6 +565,6 @@ mod tests {
         assert!(!ok(json!({"changeType": 1})));
         assert!(!ok(json!("not-an-object")));
         // No filter registered for unknown names: only the object check applies.
-        assert!(validate_event_params(&filters, "other", Some(&json!({"changeType": "x"}))).is_ok());
+        assert!(validate_event_params(&diff_names, "other", Some(&json!({"changeType": "x"}))).is_ok());
     }
 }

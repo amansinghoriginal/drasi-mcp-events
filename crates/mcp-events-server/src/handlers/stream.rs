@@ -42,7 +42,7 @@ pub async fn handle(
     if !def.delivery.contains(&DeliveryMode::Push) {
         return Err(JsonRpcError::unsupported("deliveryMode", "push"));
     }
-    crate::mapping::validate_event_params(&state.filters, &p.name, p.params.as_ref())?;
+    crate::mapping::validate_event_params(&state.diff_names, &p.name, p.params.as_ref())?;
     Ok(Sse::new(event_stream(state, id, p)).into_response())
 }
 

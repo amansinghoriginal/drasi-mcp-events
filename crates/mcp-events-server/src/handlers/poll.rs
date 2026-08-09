@@ -13,7 +13,7 @@ pub fn handle(state: &AppState, params: Option<Value>) -> Result<Value, JsonRpcE
     if !def.delivery.contains(&DeliveryMode::Poll) {
         return Err(JsonRpcError::unsupported("deliveryMode", "poll"));
     }
-    crate::mapping::validate_event_params(&state.filters, &p.name, p.params.as_ref())?;
+    crate::mapping::validate_event_params(&state.diff_names, &p.name, p.params.as_ref())?;
     let filter = state.filters.get(&p.name).cloned();
     let read = state.buffer.read(
         &p.name,

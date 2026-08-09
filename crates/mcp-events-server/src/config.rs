@@ -245,6 +245,27 @@ impl ServerConfig {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
+        // Injected names must not collide with query-derived event type names
+        // (a collision would silently overwrite the query type's filter).
+        let derived: Vec<String> = self
+            .queries
+            .iter()
+            .flat_map(|q| match self.event_modeling {
+                EventModeling::Single => vec![format!("{}.changed", q.id)],
+                EventModeling::PerChange => ["added", "updated", "deleted"]
+                    .iter()
+                    .map(|s| format!("{}.{s}", q.id))
+                    .collect(),
+            })
+            .collect();
+        for injected in &self.injected {
+            anyhow::ensure!(
+                !derived.contains(&injected.name),
+                "injected event type {:?} collides with a query-derived event type",
+                injected.name
+            );
+        }
+
         anyhow::ensure!(
             !self.queries.is_empty(),
             "config must declare at least one query"

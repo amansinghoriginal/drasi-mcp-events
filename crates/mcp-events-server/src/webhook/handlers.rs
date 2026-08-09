@@ -56,7 +56,7 @@ pub async fn handle_subscribe(
     if !def.delivery.contains(&DeliveryMode::Webhook) {
         return Err(JsonRpcError::unsupported("deliveryMode", "webhook"));
     }
-    crate::mapping::validate_event_params(&state.filters, &name, sub_params.as_ref())?;
+    crate::mapping::validate_event_params(&state.diff_names, &name, sub_params.as_ref())?;
     let url = parse_callback_url(&delivery.url, state.config.webhook.allow_insecure_urls)?;
     let secret_value = delivery.secret.as_deref().ok_or_else(|| {
         JsonRpcError::invalid_params("delivery.secret is required for webhook subscriptions")

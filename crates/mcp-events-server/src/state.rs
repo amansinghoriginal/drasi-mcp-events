@@ -21,6 +21,8 @@ pub struct AppState {
     pub filters: HashMap<String, Arc<ParamFilter>>,
     /// Event types accepting occurrences via `POST /inject`.
     pub injected_names: HashSet<String>,
+    /// Continuous-query diff types (the ones whose params carry `changeType`).
+    pub diff_names: HashSet<String>,
     /// Outbound client: redirects disabled (webhook SSRF hardening),
     /// connect timeout 5s, request timeout 10s.
     #[allow(dead_code)]
@@ -30,7 +32,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: ServerConfig) -> anyhow::Result<Arc<Self>> {
         config.validate()?;
-        let (defs, filters) = crate::mapping::build_event_model(&config);
+        let (defs, filters, diff_names) = crate::mapping::build_event_model(&config);
         let registry = Registry::new(defs);
         let max_age = config
             .buffer
@@ -56,6 +58,7 @@ impl AppState {
             subs,
             filters,
             injected_names,
+            diff_names,
             http,
         }))
     }

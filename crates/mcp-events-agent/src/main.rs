@@ -130,14 +130,14 @@ fn load_env_file(path: &std::path::Path) -> usize {
     loaded
 }
 
-const SYSTEM_PROMPT: &str = "You are an autonomous order-review agent. You are woken only when \
-the high-value-orders continuous query changes (a row entered, changed within, or left the \
-result set). You are not running continuously.\n\
-For each change: verify current state with get_order, judge whether the order is routine or \
-anomalous for this customer with get_customer_history, and if it warrants human review call \
-flag_order with a concise reason. Routine changes and rows leaving the result set (changeType \
-\"deleted\") normally need no action. Never flag the same situation twice — check priorFlags. \
-End with one sentence: what happened and what you did.";
+const SYSTEM_PROMPT: &str = "You are an autonomous order-monitoring agent. You are woken only \
+when a continuous query's result set changes (a row entered, changed within, or left it — the \
+event's name and changeType tell you which condition changed). You are not running continuously.\n\
+For each change: verify current state with get_order, use get_customer_history for context, and \
+judge the change against your assigned task. Call flag_order only when the situation warrants \
+human review under that task. Rows leaving a result set (changeType \"deleted\") mean the \
+condition stopped holding and normally need no action. Never flag the same situation twice — \
+check priorFlags. End with one sentence: what happened and what you did.";
 
 /// Reaction system prompt, contextualized with the agent's task when present
 /// so the model judges events against ITS goal, not a generic review persona.
@@ -178,8 +178,10 @@ struct Cli {
     #[arg(long, default_value = ".env")]
     env_file: PathBuf,
     /// Persists {"cursor": ...} between runs (durable replay across restarts).
-    #[arg(long, default_value = "/tmp/drasi-agent-cursor.json")]
-    state_file: PathBuf,
+    /// Defaults to /tmp/drasi-agent-cursor-<stream>.json — cursors are
+    /// positions in ONE stream's buffer, so the file is keyed per stream.
+    #[arg(long)]
+    state_file: Option<PathBuf>,
 }
 
 fn log(msg: impl AsRef<str>) {
@@ -345,7 +347,15 @@ async fn main() -> Result<()> {
         });
     }
 
-    let mut cursor = load_state(&cli.state_file)?.unwrap_or_default().cursor;
+    let state_file = cli.state_file.clone().unwrap_or_else(|| {
+        let safe: String = chosen
+            .name
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect();
+        PathBuf::from(format!("/tmp/drasi-agent-cursor-{safe}.json"))
+    });
+    let mut cursor = load_state(&state_file)?.unwrap_or_default().cursor;
     if cursor.is_some() {
         log(format!("resuming from persisted cursor {cursor:?}"));
     }
@@ -364,6 +374,15 @@ async fn main() -> Result<()> {
         let mut stream = match events_client.stream(&params).await {
             Ok(s) => s,
             Err(error) => {
+                if error
+                    .downcast_ref::<mcp_events_client::RpcError>()
+                    .is_some_and(|e| e.code == -32602)
+                {
+                    anyhow::bail!(
+                        "server permanently rejected the subscription ({error:#}); \
+                         check the chosen arguments"
+                    );
+                }
                 log(format!("stream open failed ({error:#}); retrying in {backoff:?}"));
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
@@ -395,7 +414,7 @@ async fn main() -> Result<()> {
                     } else {
                         log(format!("stream active (cursor {:?})", active.cursor));
                     }
-                    persist(&cli.state_file, &mut cursor, active.cursor);
+                    persist(&state_file, &mut cursor, active.cursor);
                 }
                 Ok(StreamFrame::Event(event)) => {
                     let new_cursor = event.cursor.clone().flatten();
@@ -404,7 +423,7 @@ async fn main() -> Result<()> {
                             log2(format!("agent: {verdict}"));
                             log("agent idle — waiting for next event");
                             failures = None;
-                            persist(&cli.state_file, &mut cursor, new_cursor);
+                            persist(&state_file, &mut cursor, new_cursor);
                         }
                         Err(error) => {
                             // At-least-once: do NOT persist the cursor — break so
@@ -428,7 +447,7 @@ async fn main() -> Result<()> {
                                     event.event_id
                                 ));
                                 failures = None;
-                                persist(&cli.state_file, &mut cursor, new_cursor);
+                                persist(&state_file, &mut cursor, new_cursor);
                             } else {
                                 log(format!(
                                     "agent error handling event {} ({error:#}); reconnecting \
@@ -441,7 +460,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 Ok(StreamFrame::Heartbeat(hb)) => {
-                    persist(&cli.state_file, &mut cursor, hb.cursor);
+                    persist(&state_file, &mut cursor, hb.cursor);
                 }
                 Ok(StreamFrame::Terminated(t)) => {
                     log(format!("subscription terminated by server: {:?}", t.error));
@@ -515,7 +534,26 @@ async fn handle_event(
                 responses_brain(event, cfg, task, mcp, tool_defs, http).await
             }
         },
+        // Deterministic playbooks are per-stream: stuck orders are an ops
+        // concern (nudge fulfillment), not a fraud-review one.
+        _ if event.name.starts_with("stuck-orders") => Ok(policy_stuck(event)),
         _ => policy_brain(event, mcp).await,
+    }
+}
+
+fn policy_stuck(event: &wire::EventOccurrence) -> String {
+    let data = &event.data;
+    let change = data.get("changeType").and_then(Value::as_str).unwrap_or("?");
+    let row = data.get("after").or_else(|| data.get("before")).cloned().unwrap_or(Value::Null);
+    let id = row.get("id").and_then(Value::as_i64).unwrap_or(-1);
+    let customer = row.get("customer").and_then(Value::as_str).unwrap_or("?");
+    match change {
+        "added" => format!(
+            "Order {id} ({customer}) has been sitting in 'open' past the threshold — \
+             notifying fulfillment to pick it up."
+        ),
+        "deleted" => format!("Order {id} ({customer}) is unstuck; no action needed."),
+        _ => format!("Order {id} ({customer}) changed while stuck; keeping watch."),
     }
 }
 
@@ -872,6 +910,55 @@ fn first_json_object(text: &str) -> Option<Value> {
     None
 }
 
+/// Model output is untrusted: every argument key must exist in the chosen
+/// stream's inputSchema, and enum values must match — case-coerced, so a
+/// model's "p1" becomes the catalog's "P1" instead of silently filtering out
+/// every occurrence.
+fn validate_choice_args(
+    def: &wire::EventDefinition,
+    arguments: Option<Value>,
+) -> Result<Option<Value>> {
+    let name = &def.name;
+    match arguments {
+        None => Ok(None),
+        Some(Value::Object(args)) => {
+            let props = def
+                .input_schema
+                .as_ref()
+                .and_then(|s| s.get("properties"))
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("model supplied arguments but {name} declares no inputSchema")
+                })?;
+            let mut checked = serde_json::Map::new();
+            for (k, v) in args {
+                let prop = props.get(&k).ok_or_else(|| {
+                    anyhow::anyhow!("argument {k:?} is not in {name}'s inputSchema")
+                })?;
+                let value = match prop.get("enum").and_then(Value::as_array) {
+                    Some(allowed) if !allowed.contains(&v) => v
+                        .as_str()
+                        .and_then(|s| {
+                            allowed
+                                .iter()
+                                .find(|a| a.as_str().is_some_and(|c| c.eq_ignore_ascii_case(s)))
+                                .cloned()
+                        })
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "argument {k}={v} not among allowed values {allowed:?} for {name}"
+                            )
+                        })?,
+                    _ => v,
+                };
+                checked.insert(k, value);
+            }
+            Ok(Some(Value::Object(checked)))
+        }
+        Some(other) => anyhow::bail!("arguments must be an object, got {other}"),
+    }
+}
+
 async fn llm_choose(
     cfg: &LlmConfig,
     http: &reqwest::Client,
@@ -889,15 +976,16 @@ async fn llm_choose(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing eventName in {parsed}"))?
         .to_owned();
-    anyhow::ensure!(
-        catalog.iter().any(|d| d.name == name),
-        "model chose {name:?}, which is not in the catalog"
-    );
+    let def = catalog
+        .iter()
+        .find(|d| d.name == name)
+        .ok_or_else(|| anyhow::anyhow!("model chose {name:?}, which is not in the catalog"))?;
     let arguments = match &parsed["arguments"] {
         Value::Null => None,
         v @ Value::Object(map) => (!map.is_empty()).then(|| v.clone()),
         other => anyhow::bail!("arguments must be an object or null, got {other}"),
     };
+    let arguments = validate_choice_args(def, arguments)?;
     Ok(Chosen {
         name,
         arguments,
@@ -933,12 +1021,16 @@ fn policy_choose(task: &str, catalog: &[wire::EventDefinition]) -> Chosen {
         .and_then(|s| s.get("properties"))
         .and_then(Value::as_object)
     {
-        let task_upper = task.to_uppercase();
+        // Whole-token comparison: "P1" must not match inside "P1000".
+        let task_tokens: Vec<String> = task
+            .split(|c: char| !c.is_alphanumeric())
+            .map(str::to_uppercase)
+            .collect();
         for (key, prop) in props {
             if let Some(options) = prop.get("enum").and_then(Value::as_array) {
                 if let Some(hit) = options.iter().find(|v| {
                     v.as_str()
-                        .is_some_and(|s| task_upper.contains(&s.to_uppercase()))
+                        .is_some_and(|s| task_tokens.iter().any(|t| t == &s.to_uppercase()))
                 }) {
                     arguments.insert(key.clone(), hit.clone());
                 }
@@ -1135,17 +1227,31 @@ async fn openai_brain(
                 ),
             };
         }
+        // A length-truncated turn can carry PARTIAL tool calls — executing
+        // them would fire real side effects from garbage (sibling dialects
+        // already guard their equivalents).
+        if finish != "tool_calls" && finish != "stop" {
+            anyhow::bail!(
+                "finish_reason {finish:?} with tool calls present (likely truncated output)"
+            );
+        }
         messages.push(message.clone());
         for call in &tool_calls {
             let name = call["function"]["name"].as_str().unwrap_or("");
-            let args: Value = call["function"]["arguments"]
-                .as_str()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_else(|| json!({}));
-            let payload = mcp
-                .call(name, args)
-                .await
-                .unwrap_or_else(|e| json!({"error": e.to_string()}));
+            let raw = call["function"]["arguments"].as_str().unwrap_or("");
+            let parsed_args = if raw.trim().is_empty() {
+                Ok(json!({}))
+            } else {
+                serde_json::from_str::<Value>(raw)
+                    .map_err(|e| format!("unparseable tool arguments {raw:?}: {e}"))
+            };
+            let payload = match parsed_args {
+                Ok(args) => mcp
+                    .call(name, args)
+                    .await
+                    .unwrap_or_else(|e| json!({"error": e.to_string()})),
+                Err(msg) => json!({"error": msg}),
+            };
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call["id"],
@@ -1261,6 +1367,52 @@ mod tests {
 
         let c = policy_choose("Watch fulfillment for orders stuck without processing", &catalog());
         assert_eq!(c.name, "stuck-orders.changed");
+    }
+
+    #[test]
+    fn choice_args_validated_and_case_coerced() {
+        let cat = catalog();
+        let incidents = cat.iter().find(|d| d.name == "incidents.created").unwrap();
+        // lowercase enum value is coerced to the canonical catalog form
+        let ok = validate_choice_args(incidents, Some(json!({"priority": "p1"}))).unwrap();
+        assert_eq!(ok, Some(json!({"priority": "P1"})));
+        // unknown key rejected
+        assert!(validate_choice_args(incidents, Some(json!({"sev": "P1"}))).is_err());
+        // out-of-enum value rejected
+        assert!(validate_choice_args(incidents, Some(json!({"priority": "urgent"}))).is_err());
+        // args against a schema-less stream rejected
+        let hv = cat.iter().find(|d| d.name == "high-value-orders.changed").unwrap();
+        assert!(validate_choice_args(hv, Some(json!({"priority": "P1"}))).is_err());
+        assert_eq!(validate_choice_args(hv, None).unwrap(), None);
+    }
+
+    #[test]
+    fn policy_chooser_enum_extraction_is_whole_token() {
+        // "P1000" must not extract priority P1.
+        let c = policy_choose("monitor operational incidents for the P1000 migration", &catalog());
+        assert_eq!(c.name, "incidents.created");
+        assert_eq!(c.arguments, None);
+    }
+
+    #[test]
+    fn stuck_events_get_the_ops_playbook_not_fraud() {
+        let ev: wire::EventOccurrence = serde_json::from_value(json!({
+            "eventId": "e9", "name": "stuck-orders.changed",
+            "timestamp": "2026-08-10T00:00:00Z",
+            "data": {"changeType": "added",
+                      "after": {"id": 4, "customer": "dave", "total": 250.0, "status": "open"}},
+        }))
+        .unwrap();
+        let verdict = policy_stuck(&ev);
+        assert!(verdict.contains("notifying fulfillment"), "{verdict}");
+        let ev_unstuck: wire::EventOccurrence = serde_json::from_value(json!({
+            "eventId": "e10", "name": "stuck-orders.changed",
+            "timestamp": "2026-08-10T00:00:01Z",
+            "data": {"changeType": "deleted",
+                      "before": {"id": 4, "customer": "dave", "total": 250.0, "status": "open"}},
+        }))
+        .unwrap();
+        assert!(policy_stuck(&ev_unstuck).contains("unstuck"));
     }
 
     #[test]
