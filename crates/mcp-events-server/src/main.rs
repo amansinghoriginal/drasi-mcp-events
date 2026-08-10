@@ -25,10 +25,14 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // rmcp logs a per-request service lifecycle at INFO under the stateless
+    // protocol ("serve finished quit_reason=Cancelled" etc.) — normal noise
+    // that reads like errors in a demo terminal. Quiet it by default;
+    // RUST_LOG still overrides.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,rmcp=warn")),
         )
         .init();
 

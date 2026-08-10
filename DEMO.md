@@ -84,7 +84,10 @@ EVENT incidents.created P1 on checkout-service — Checkout returning 500s — w
 
 ## Act 2 — same binary, different task, different choice (+ the tools loop)
 
-Restart B with a different goal (`rm -f /tmp/drasi-agent-cursor.json` first):
+**In Terminal B** (careful: Ctrl-C the *agent*, not the server in Terminal A — if you do
+kill the server, agents just retry with backoff; restart Terminal A and they heal), stop
+the on-call agent and start it with a different goal. No cursor cleanup needed between
+tasks — cursor files are per-stream:
 
 ```bash
 cargo run -p mcp-events-agent -- --task \

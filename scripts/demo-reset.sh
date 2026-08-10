@@ -14,9 +14,12 @@ docker ps --format '{{.Names}}' | grep -q '^drasi-demo-postgres$' || {
   exit 1
 }
 
-if pids=$(lsof -ti :8090 2>/dev/null) && [ -n "$pids" ]; then
+# -sTCP:LISTEN scopes the kill to the server itself — a plain `lsof -ti :8090`
+# would also match connected agents' client sockets.
+if pids=$(lsof -ti tcp:8090 -sTCP:LISTEN 2>/dev/null) && [ -n "$pids" ]; then
   echo "$pids" | xargs kill
-  echo "==> stopped MCP server on :8090 (restart it fresh — its buffer must start empty)"
+  echo "==> stopped MCP server on :8090 (restart it fresh — its buffer must start empty;"
+  echo "    running agents will retry/backoff and heal once the server is back)"
 fi
 
 echo "==> restoring seed data (row-level deletes, not TRUNCATE, so WAL replication stays happy)"

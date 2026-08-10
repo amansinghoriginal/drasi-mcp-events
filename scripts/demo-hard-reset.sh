@@ -14,7 +14,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if pids=$(lsof -ti :8090 2>/dev/null) && [ -n "$pids" ]; then
+if pids=$(lsof -ti tcp:8090 -sTCP:LISTEN 2>/dev/null) && [ -n "$pids" ]; then
   echo "$pids" | xargs kill
   echo "==> stopped MCP server on :8090"
 fi
