@@ -289,8 +289,17 @@ pub fn spawn_feed_pipeline(state: Arc<AppState>) -> tokio::task::JoinHandle<()> 
             };
             if state.registry.get(&emitted.name).is_some() {
                 let name = emitted.name.clone();
+                let event_id = emitted.event_id.clone();
+                // INFO to match the /inject log line — the server terminal
+                // should narrate every stream's occurrences during demos.
+                let change = emitted
+                    .data
+                    .get("changeType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-")
+                    .to_owned();
                 let seq = state.buffer.emit(emitted);
-                tracing::trace!(%name, seq, "emitted feed event");
+                tracing::info!(%name, %change, %event_id, seq, "feed occurrence");
             } else {
                 tracing::debug!(name = %emitted.name, "dropping feed event for unregistered event type");
             }
