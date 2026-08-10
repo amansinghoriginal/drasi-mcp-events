@@ -16,7 +16,7 @@ ALTER TABLE orders REPLICA IDENTITY FULL;
 
 -- Rows both above and below the high-value threshold (total > 1000).
 -- No seed row is status 'open': the stuck-orders temporal query watches
--- 'open', and seed rows would otherwise fire spurious "stuck" events 45s
+-- 'open', and seed rows would otherwise fire spurious "stuck" events 15s
 -- after every bring-up/reset. Demo acts insert fresh 'open' rows themselves.
 INSERT INTO orders (customer, total, status) VALUES
     ('alice', 1500.00, 'paid'),      -- above threshold: in high-value result set

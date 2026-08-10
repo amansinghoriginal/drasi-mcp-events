@@ -33,7 +33,7 @@ queries:
         status: { type: string }
   - id: stuck-orders
     description: >-
-      Fires when an order has remained in status 'open' for more than 45
+      Fires when an order has remained in status 'open' for more than 15
       seconds without being processed — a temporal condition: the 'added'
       event fires because time passed, with no database write triggering it.
       'added' means an order is now stuck and may need intervention;

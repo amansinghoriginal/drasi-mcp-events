@@ -35,7 +35,7 @@ Harness: `cargo run -p mcp-events-client --bin events-harness -- <discover|list|
 - **Drasi config/seed changes need `demo-hard-reset.sh`** — `server.yaml` is bind-mounted
   read-only and `seed.sql` only runs on an empty Postgres volume.
 - **Seed rows must never be status `'open'`** — the `stuck-orders` temporal query
-  (`drasi.trueFor`, 45s) would fire on them after every reset.
+  (`drasi.trueFor`, 15s) would fire on them after every reset.
 - **LLM config** comes from untracked `.env` (see `.env.example`): three dialects —
   `anthropic`, `openai` (chat completions), and OpenAI Responses (auto-detected from a
   `/responses` URL). No credentials ⇒ deterministic policy brain, same demo beats.

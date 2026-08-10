@@ -11,7 +11,7 @@ the official Rust SDK on MCP 2026-07-28.
                           ┌──────────────── hybrid MCP server (POST /mcp) ────────────────┐
  Postgres ─WAL▶ Drasi ───▶│ events/list ─── the catalog (LLM-readable descriptions)       │
    two continuous queries │   high-value-orders.changed   (condition: total > $1,000)     │
-                          │   stuck-orders.changed        (temporal: open for 45s —       │
+                          │   stuck-orders.changed        (temporal: open for 15s —       │
                           │                                fires with NO write at all)    │
  fire-incident.sh ──────▶ │   incidents.created           (on-demand, P1–P4 filterable)   │
                           │ events/stream ── wakes the agent   tools/* ── verify + act    │
@@ -132,13 +132,13 @@ docker exec drasi-demo-postgres psql -U demo -d demo \
   -c "INSERT INTO orders (customer, total, status) VALUES ('leo', 300, 'open');"
 ```
 
-Narrate the silence. ~45 seconds later B wakes — **no second write ever happened**:
+Narrate the silence. ~15 seconds later B wakes — **no second write ever happened**:
 
 ```
 EVENT ADDED order 9 (leo, $300) — waking agent          ← fired by time passing
 ```
 
-> **Say:** *"that event exists because a condition — 'open for 45 seconds straight' —
+> **Say:** *"that event exists because a condition — 'open for 15 seconds straight' —
 > became true. There is no cron job, no poller, no trigger anywhere in this system. The
 > continuous query noticed time passing."* (`drasi.trueFor` in drasi/server.yaml.)
 > Bonus: `UPDATE orders SET status='shipped' WHERE customer='leo'` → the agent gets
